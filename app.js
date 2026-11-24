@@ -55,7 +55,7 @@ const db = initializeFirestore(fb, {
 });
 
 // ---------- TMDB ----------
-async function tmdb(path, params = {}) {
+async function tmdbOnce(path, params) {
   const url = new URL("https://api.themoviedb.org/3" + path);
   const key = CONFIG.tmdbApiKey;
   const headers = { accept: "application/json" };
@@ -64,8 +64,22 @@ async function tmdb(path, params = {}) {
   url.searchParams.set("language", params.language || CONFIG.language);
   for (const [k, v] of Object.entries(params)) if (k !== "language") url.searchParams.set(k, v);
   const res = await fetch(url, { headers });
-  if (!res.ok) throw new Error(`TMDB ${res.status}`);
+  if (!res.ok) { const err = new Error(`TMDB ${res.status}`); err.status = res.status; throw err; }
   return res.json();
+}
+
+// Vid serverfel hos TMDB: försök igen, och sist på engelska.
+async function tmdb(path, params = {}) {
+  try { return await tmdbOnce(path, params); }
+  catch (err) {
+    if (!(err.status >= 500) && err.status !== 429) throw err;
+    await new Promise((r) => setTimeout(r, 700));
+    try { return await tmdbOnce(path, params); }
+    catch (err2) {
+      if (params.language === "en-US") throw err2;
+      return tmdbOnce(path, { ...params, language: "en-US" });
+    }
+  }
 }
 
 function providerList(...lists) {
