@@ -1,0 +1,20 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ÄNDRA HÄR: era två e-postadresser (med små bokstäver)
+    function isMember() {
+      return request.auth != null
+        && request.auth.token.email.lower() in ['kittykatten@gmail.com', 'jerry.thorsen@gmail.com'];
+    }
+
+    match /shows/{showId} {
+      allow read, write: if isMember();
+    }
+
+    match /users/{userId} {
+      allow read: if isMember();
+      allow write: if isMember() && request.auth.uid == userId;
+    }
+  }
+}
