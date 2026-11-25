@@ -92,14 +92,42 @@ function providerList(...lists) {
     .map((p) => ({ id: p.provider_id, name: p.provider_name, logo: p.logo_path }));
 }
 
+// Bump when fetchShowData stores new fields, so saved shows are fetched again.
+const DATA_V = 2;
+const needsRefresh = (s, maxAge) => Date.now() - (s.fetchedAt || 0) > maxAge || s.lang !== CONFIG.language || s.dataV !== DATA_V;
+
+// Runtime (minutes) per episode, fetched season by season (max 20 seasons per request).
+async function fetchRuntimes(id, seasons) {
+  const out = {};
+  for (let i = 0; i < seasons.length; i += 20) {
+    const chunk = seasons.slice(i, i + 20);
+    const d = await tmdb(`/tv/${id}`, { append_to_response: chunk.map((x) => `season/${x.n}`).join(",") });
+    for (const x of chunk) {
+      const eps = d[`season/${x.n}`]?.episodes || [];
+      const rt = Array(x.eps).fill(null);
+      for (const e of eps) if (e.episode_number >= 1 && e.episode_number <= x.eps) rt[e.episode_number - 1] = e.runtime || null;
+      out[x.n] = rt;
+    }
+  }
+  return out;
+}
+
 async function fetchShowData(id) {
-  const d = await tmdb(`/tv/${id}`, { append_to_response: "watch/providers" });
+  const d = await tmdb(`/tv/${id}`, { append_to_response: "watch/providers,aggregate_credits,external_ids,videos" });
   let overview = d.overview;
   if (!overview) {
     try { overview = (await tmdb(`/tv/${id}`, { language: "en-US" })).overview; } catch {}
   }
   const wp = d["watch/providers"]?.results?.[CONFIG.region] || {};
   const ep = (x) => (x ? { s: x.season_number, e: x.episode_number, date: x.air_date || null } : null);
+  const seasons = (d.seasons || []).filter((s) => s.season_number > 0 && s.episode_count > 0)
+    .map((s) => ({ n: s.season_number, eps: s.episode_count }));
+  try {
+    const rts = await fetchRuntimes(d.id, seasons);
+    for (const x of seasons) x.rt = rts[x.n] || [];
+  } catch {}
+  const vids = (d.videos?.results || []).filter((v) => v.site === "YouTube");
+  const trailer = vids.find((v) => v.type === "Trailer" && v.official) || vids.find((v) => v.type === "Trailer") || vids.find((v) => v.type === "Teaser");
   return {
     tmdbId: d.id,
     name: d.name,
@@ -112,8 +140,16 @@ async function fetchShowData(id) {
     rating: d.vote_average ? Math.round(d.vote_average * 10) / 10 : null,
     tmdbStatus: d.status,
     ended: ["Ended", "Canceled"].includes(d.status),
-    seasons: (d.seasons || []).filter((s) => s.season_number > 0 && s.episode_count > 0)
-      .map((s) => ({ n: s.season_number, eps: s.episode_count })),
+    seasons,
+    runtime: d.episode_run_time?.[0] || d.last_episode_to_air?.runtime || null,
+    creators: (d.created_by || []).map((c) => c.name),
+    networks: (d.networks || []).map((n) => n.name),
+    cast: (d.aggregate_credits?.cast || []).slice(0, 15).map((c) => ({
+      id: c.id, name: c.name, profile: c.profile_path || null,
+      character: c.roles?.[0]?.character || "", episodes: c.total_episode_count || null,
+    })),
+    imdbId: d.external_ids?.imdb_id || null,
+    trailer: trailer?.key || null,
     lastAired: ep(d.last_episode_to_air),
     nextAir: ep(d.next_episode_to_air),
     providers: {
@@ -122,6 +158,7 @@ async function fetchShowData(id) {
       link: wp.link || null,
     },
     lang: CONFIG.language,
+    dataV: DATA_V,
     fetchedAt: Date.now(),
   };
 }
@@ -153,6 +190,27 @@ function episodeCounts(show) {
   return { total, seen };
 }
 const epLabel = (x) => `S${x.s} · E${x.e}`;
+
+// Total runtime in minutes, either for everything aired or only what is left to watch.
+// Episodes without a runtime count as the show's average.
+function runtimeMinutes(show, onlyUnwatched) {
+  const known = seasonsOf(show).flatMap((s) => s.rt || []).filter(Boolean);
+  const avg = known.length ? known.reduce((a, b) => a + b, 0) / known.length : show.runtime;
+  if (!avg) return null;
+  let min = 0;
+  for (const s of seasonsOf(show)) for (let e = 1; e <= s.eps; e++) {
+    if (!isAired(show, s.n, e)) continue;
+    if (onlyUnwatched && isWatched(show, s.n, e)) continue;
+    min += s.rt?.[e - 1] || avg;
+  }
+  return Math.round(min);
+}
+function fmtDuration(min) {
+  if (min == null) return "";
+  const h = Math.floor(min / 60), m = min % 60;
+  return h ? (m ? `${h} h ${m} min` : `${h} h`) : `${m} min`;
+}
+const timeLeft = (show) => { const m = runtimeMinutes(show, true); return m ? `${fmtDuration(m)} left` : ""; };
 
 // ---------- State ----------
 const state = {
@@ -236,7 +294,7 @@ function startListening() {
 
 // Fetch new episodes and streaming info for active shows (at most once a day, or when the language changed).
 async function refreshStale() {
-  const stale = state.shows.filter((s) => (s.status === "watching" || s.status === "want") && (Date.now() - (s.fetchedAt || 0) > DAY || s.lang !== CONFIG.language));
+  const stale = state.shows.filter((s) => (s.status === "watching" || s.status === "want") && needsRefresh(s, DAY));
   for (const s of stale.slice(0, 40)) {
     try { await updateDoc(doc(db, "shows", String(s.tmdbId)), await fetchShowData(s.tmdbId)); } catch {}
   }
@@ -327,13 +385,14 @@ const interestScore = (show) => members().reduce((sum, m) => sum + (show.interes
 function card(show) {
   let extra = "";
   if (show.status === "want") {
-    extra = `${isOurs(show) ? `<span class="pill good">Our shows</span>` : ""}${interestRow(show)}`;
+    const tot = runtimeMinutes(show, false);
+    extra = `${isOurs(show) ? `<span class="pill good">Our shows</span>` : ""}${interestRow(show)}${tot ? `<div class="muted small">${fmtDuration(tot)} in total</div>` : ""}`;
   } else if (show.status === "watching") {
     const n = nextEp(show);
     const { total, seen } = episodeCounts(show);
     const pct = total ? Math.round((seen / total) * 100) : 0;
     extra = `
-      <div class="next">${n ? `Next: <b>${epLabel(n)}</b>` : show.nextAir ? `Caught up · new episode ${fmtDate(show.nextAir.date)}` : show.ended ? "All episodes watched" : "Caught up · waiting for new episodes"}</div>
+      <div class="next">${n ? `Next: <b>${epLabel(n)}</b>${timeLeft(show) ? ` <span class="muted small">· ${timeLeft(show)}</span>` : ""}` : show.nextAir ? `Caught up · new episode ${fmtDate(show.nextAir.date)}` : show.ended ? "All episodes watched" : "Caught up · waiting for new episodes"}</div>
       <div class="bar"><span style="width:${pct}%"></span></div>`;
   } else {
     extra = `<div class="muted small">${STATUS[show.status]}${show.status === "done" && !show.ended && show.nextAir ? ` · new season ${fmtDate(show.nextAir.date)}` : ""}</div>`;
@@ -456,7 +515,7 @@ function openSheet(id) {
   document.body.classList.add("noscroll");
   renderSheet();
   $("#sheet").scrollTop = 0;
-  if (show && (Date.now() - (show.fetchedAt || 0) > 3 * DAY || show.lang !== CONFIG.language)) {
+  if (show && needsRefresh(show, 3 * DAY)) {
     fetchShowData(id).then((d) => updateDoc(doc(db, "shows", String(id)), d)).catch(() => {});
   }
   // A search result that is not in the list: fetch the details just for viewing.
@@ -509,15 +568,48 @@ function providersSection(show) {
         </section>`;
 }
 
+function aboutSection(show) {
+  const links = [
+    show.trailer && [`https://www.youtube.com/watch?v=${encodeURIComponent(show.trailer)}`, "▶ Trailer"],
+    [`https://www.themoviedb.org/tv/${show.tmdbId}`, "TMDB"],
+    show.imdbId && [`https://www.imdb.com/title/${encodeURIComponent(show.imdbId)}/`, "IMDb"],
+  ].filter(Boolean);
+  const tot = runtimeMinutes(show, false);
+  const facts = [
+    show.creators?.length && `<div><span class="muted">Created by</span> ${esc(show.creators.join(", "))}</div>`,
+    show.networks?.length && `<div><span class="muted">Network</span> ${esc(show.networks.join(", "))}</div>`,
+    tot && `<div><span class="muted">Total runtime</span> ${fmtDuration(tot)}${show.nextAir ? " so far" : ""}</div>`,
+  ].filter(Boolean).join("");
+  return `
+        ${show.overview ? `<p class="overview">${esc(show.overview)}</p>` : `<p class="muted">No description available.</p>`}
+        ${facts ? `<div class="facts small">${facts}</div>` : ""}
+        <div class="links">${links.map(([href, label]) => `<a class="linkbtn" href="${esc(href)}" target="_blank" rel="noopener">${label} ↗</a>`).join("")}</div>
+        ${show.nextAir ? `<p class="muted small">Next episode (${epLabel(show.nextAir)}) airs ${fmtDate(show.nextAir.date)}.</p>` : ""}`;
+}
+
+function castSection(show) {
+  if (!show.cast?.length) return "";
+  return `
+        <section>
+          <h3>Cast <a class="small" href="https://www.themoviedb.org/tv/${show.tmdbId}/cast" target="_blank" rel="noopener">Full cast ↗</a></h3>
+          <div class="cast">${show.cast.map((c) => `
+            <a class="person" href="https://www.themoviedb.org/person/${c.id}" target="_blank" rel="noopener">
+              <div class="face">${c.profile ? `<img loading="lazy" src="${img(c.profile, "w185")}" alt="">` : esc(c.name.slice(0, 1))}</div>
+              <b>${esc(c.name)}</b>
+              <span class="muted">${esc(c.character)}</span>
+            </a>`).join("")}</div>
+        </section>`;
+}
+
 // Details for a search result that is not in the list yet.
 function renderPreview(el, show) {
   el.innerHTML = `
     <div class="sheet-inner">
       ${sheetHeader(show)}
         <button class="btn primary wide" data-action="add" data-id="${show.tmdbId}">＋ Add to Want to watch</button>
-        ${show.overview ? `<p class="overview">${esc(show.overview)}</p>` : `<p class="muted">No description available.</p>`}
-        ${show.nextAir ? `<p class="muted small">Next episode (${epLabel(show.nextAir)}) airs ${fmtDate(show.nextAir.date)}.</p>` : ""}
+        ${aboutSection(show)}
         ${providersSection(show)}
+        ${castSection(show)}
       </div>
     </div>`;
 }
@@ -543,7 +635,7 @@ function renderSheet() {
         <div class="seg">${Object.entries(STATUS).map(([k, l]) =>
           `<button class="${show.status === k ? "on" : ""}" data-action="status" data-s="${k}">${l}</button>`).join("")}</div>
 
-        ${show.overview ? `<p class="overview">${esc(show.overview)}</p>` : ""}
+        ${aboutSection(show)}
 
         ${providersSection(show)}
 
@@ -562,7 +654,7 @@ function renderSheet() {
 
         ${seasonsOf(show).length ? `
         <section>
-          <h3>Episodes <span class="muted small">${seen} of ${total} watched</span></h3>
+          <h3>Episodes <span class="muted small">${seen} of ${total} watched${seen < total && timeLeft(show) ? ` · ${timeLeft(show)}` : ""}</span></h3>
           <div class="bar big"><span style="width:${total ? Math.round((seen / total) * 100) : 0}%"></span></div>
           ${n ? `<div class="next-row"><div><span class="muted small">Next episode</span><b>${epLabel(n)}</b></div><button class="btn primary" data-action="advance" data-id="${show.tmdbId}">✓ Mark as watched</button></div>`
               : `<p class="muted">${show.nextAir ? `Next episode (${epLabel(show.nextAir)}) airs ${fmtDate(show.nextAir.date)}.` : seen && seen === total ? "You have watched every episode so far." : ""}</p>`}
@@ -577,6 +669,8 @@ function renderSheet() {
           <p class="muted small">Tap an episode to mark it and everything before it as watched.</p>` : ""}
           ${show.progress?.s ? `<button class="btn link small" data-action="resetEp">Reset episodes</button>` : ""}
         </section>` : ""}
+
+        ${castSection(show)}
 
         <div class="danger-zone">
           <button class="btn link small" data-action="refresh">↻ Refresh info</button>
