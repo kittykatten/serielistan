@@ -161,3 +161,6 @@ main { padding: 4px 12px 12px; max-width: 720px; margin: 0 auto; }
   .show:hover { background: var(--surface2); }
 }
 .btn.google { display: inline-flex; align-items: center; gap: 12px; background: #fff; color: #1f1f1f; padding: 14px 22px; margin-top: 24px; font-size: 16px; }
+.next-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 4px; }
+.next-row > div { display: flex; flex-direction: column; }
+.next-row b { font-size: 18px; }

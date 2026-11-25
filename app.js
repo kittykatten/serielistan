@@ -523,7 +523,7 @@ function renderSheet() {
         <section>
           <h3>Avsnitt <span class="muted small">${seen} av ${total} sedda</span></h3>
           <div class="bar big"><span style="width:${total ? Math.round((seen / total) * 100) : 0}%"></span></div>
-          ${n ? `<button class="btn primary wide" data-action="advance" data-id="${show.tmdbId}">✓ Vi har sett ${epLabel(n)}</button>`
+          ${n ? `<div class="next-row"><div><span class="muted small">Nästa avsnitt</span><b>${epLabel(n)}</b></div><button class="btn primary" data-action="advance" data-id="${show.tmdbId}">✓ Markera som sett</button></div>`
               : `<p class="muted">${show.nextAir ? `Nästa avsnitt (${epLabel(show.nextAir)}) kommer ${fmtDate(show.nextAir.date)}.` : seen && seen === total ? "Ni har sett alla avsnitt som finns." : ""}</p>`}
           <div class="chips">${seasonsOf(show).map((s) => {
             const allSeen = isWatched(show, s.n, s.eps);
