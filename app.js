@@ -47,7 +47,26 @@ if (!configured) {
   throw new Error("config.js is not filled in");
 }
 
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+// Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
+const APP_VERSION = "v12";
+
+// Look for a new version on every start and when the app comes back to the foreground.
+// When a new service worker takes over, reload once so the new files are used.
+if ("serviceWorker" in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController || reloading) return;
+    reloading = true;
+    location.reload();
+  });
+  navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((reg) => {
+    reg.update().catch(() => {});
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") reg.update().catch(() => {});
+    });
+  }).catch(() => {});
+}
 
 // ---------- Firebase ----------
 const fb = initializeApp(CONFIG.firebase);
@@ -735,7 +754,7 @@ document.addEventListener("click", async (e) => {
     case "logout": return signOut(auth);
     case "menu": {
       const ms = members().map((m) => m.name).join(" & ");
-      if (confirm(`Signed in as ${myName()} (${state.user.email}).\nThe list is shared by: ${ms}\n\nDo you want to sign out?`)) signOut(auth);
+      if (confirm(`Signed in as ${myName()} (${state.user.email}).\nThe list is shared by: ${ms}\nApp version: ${APP_VERSION}\n\nDo you want to sign out?`)) signOut(auth);
       return;
     }
     case "tab":
