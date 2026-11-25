@@ -337,6 +337,9 @@ function update(id, patch) {
     .catch((err) => toast("Could not save: " + err.message));
 }
 
+// Watching, but every aired episode is watched: shown under Watched until new episodes air.
+const caughtUp = (show) => show.status === "watching" && seasonsOf(show).length > 0 && !nextEp(show);
+
 function advance(id) {
   const show = showById(id);
   const n = show && nextEp(show);
@@ -345,6 +348,7 @@ function advance(id) {
   if (show.status !== "watching") patch.status = "watching";
   const after = nextEp({ ...show, progress: n });
   if (!after && show.ended) { patch.status = "done"; toast(`🎉 You finished ${show.name}!`); }
+  else if (!after) toast(`✓ Caught up – moved to Watched until new episodes air`);
   else toast(`✓ ${epLabel(n)} watched`);
   update(id, patch);
 }
@@ -448,18 +452,26 @@ function renderList() {
         }).join("")}
     </div>`;
   } else if (state.tab === "watching") {
-    list = state.shows.filter((s) => s.status === "watching")
-      .sort((a, b) => !!nextEp(b) - !!nextEp(a) || (b.updatedAt || 0) - (a.updatedAt || 0));
-  } else {
-    list = state.shows.filter((s) => s.status === "done" || s.status === "dropped")
+    list = state.shows.filter((s) => s.status === "watching" && !caughtUp(s))
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  } else {
+    // Caught-up shows wait here until new episodes air, then move back to Watching.
+    const waiting = state.shows.filter(caughtUp)
+      .sort((a, b) => (a.nextAir?.date || "9999").localeCompare(b.nextAir?.date || "9999"));
+    const finished = state.shows.filter((s) => s.status === "done" || s.status === "dropped")
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    if (waiting.length) {
+      header = `<h2 class="section">Waiting for new episodes</h2><div class="list">${waiting.map(card).join("")}</div>`
+        + (finished.length ? `<h2 class="section">Finished</h2>` : "");
+    }
+    list = finished;
   }
   const empty = {
     want: state.wantFilter === "all" ? "No shows here yet. Tap <b>Search</b> to add one." : "No shows match this filter.",
     watching: "You are not watching anything right now. Pick a show from <b>List</b>.",
     done: "Shows you have finished end up here.",
   }[state.tab];
-  main.innerHTML = header + (list.length ? `<div class="list">${list.map(card).join("")}</div>` : `<p class="empty">${empty}</p>`);
+  main.innerHTML = header + (list.length ? `<div class="list">${list.map(card).join("")}</div>` : header && state.tab === "done" ? "" : `<p class="empty">${empty}</p>`);
 }
 
 // ---------- Search ----------
