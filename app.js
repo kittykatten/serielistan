@@ -357,10 +357,11 @@ function renderList() {
   if (state.tab === "want") {
     list = state.shows.filter((s) => s.status === "want");
     if (state.wantFilter === "both") list = list.filter(everyoneWants);
-    if (state.wantFilter === "mine") list = list.filter((s) => s.interest?.[state.user.uid] === undefined);
+    if (state.wantFilter === "mine") list = list.filter((s) => s.interest?.[state.user.uid] === 2 && !everyoneWants(s));
+    if (state.wantFilter === "pending") list = list.filter((s) => s.interest?.[state.user.uid] === undefined);
     list.sort((a, b) => everyoneWants(b) - everyoneWants(a) || interestScore(b) - interestScore(a) || (b.addedAt || 0) - (a.addedAt || 0));
     header = `<div class="chips">
-      ${[["all", "Alla"], ["both", "💚 Båda vill"], ["mine", "❔ Väntar på mig"]]
+      ${[["all", "Alla"], ["both", "💚 Våra serier"], ["mine", "😍 Mina serier"], ["pending", "❔ Väntar på mig"]]
         .map(([k, l]) => `<button class="chip ${state.wantFilter === k ? "on" : ""}" data-action="wantFilter" data-f="${k}">${l}</button>`).join("")}
     </div>`;
   } else if (state.tab === "watching") {
