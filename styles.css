@@ -184,3 +184,14 @@ main { padding: 4px 12px 12px; max-width: 720px; margin: 0 auto; }
 .btn.danger { background: none; border: 1px solid rgba(255, 138, 138, 0.4); color: #ff8a8a; margin-top: 8px; }
 .left { font-size: 14px; font-weight: 600; margin: 2px 0 4px; }
 .pill.later { background: rgba(160, 170, 255, 0.15); color: #b8bfff; }
+.settings-top { display: flex; align-items: center; gap: 12px; padding: calc(env(safe-area-inset-top) + 10px) 12px 4px; }
+.close.static { position: static; }
+.settings-top h2 { font-size: 20px; }
+.sheet-body.flat { margin-top: 0; }
+.svc-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.svc { display: flex; align-items: center; gap: 10px; padding: 6px 10px 6px 6px; border-radius: 10px; background: var(--surface2); text-align: left; border: 2px solid transparent; }
+.svc.on { border-color: var(--accent); }
+.svc img, .svc .nologo { width: 32px; height: 32px; border-radius: 7px; flex: 0 0 32px; background: var(--surface); }
+.svc span:nth-child(2) { flex: 1; }
+.svc .check { color: var(--accent); font-weight: 700; width: 16px; }
+h4.small { font-weight: 600; margin-top: 14px; }

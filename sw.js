@@ -1,5 +1,5 @@
 // Service worker: gör att appen startar snabbt och fungerar även med dålig täckning.
-const VERSION = "v15";
+const VERSION = "v16";
 const SHELL = `shell-${VERSION}`;
 const IMAGES = "images-v1";
 const FILES = [

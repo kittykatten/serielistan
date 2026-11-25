@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v15";
+const APP_VERSION = "v16";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -400,10 +400,24 @@ function render() {
   if (state.tab === "search") renderSearch();
   else renderList();
   if (state.openId) renderSheet();
+  renderSettings();
+}
+
+// Streaming services each person has picked in Settings. The app shows the union of everyone's picks;
+// with no picks at all, every service is shown.
+function ourServices() {
+  const ids = new Set(Object.values(state.users).flatMap((u) => u.services || []));
+  return ids.size ? ids : null;
+}
+function splitProviders(show) {
+  const all = show.providers?.stream || [];
+  const mine = ourServices();
+  if (!mine) return { ours: all, others: [] };
+  return { ours: all.filter((p) => mine.has(p.id)), others: all.filter((p) => !mine.has(p.id)) };
 }
 
 function providerLogos(show, max = 3) {
-  const p = show.providers?.stream || [];
+  const p = splitProviders(show).ours;
   if (!p.length) return "";
   return `<div class="logos">${p.slice(0, max).filter((x) => x.logo).map((x) => `<img src="${img(x.logo, "w92")}" alt="${esc(x.name)}" title="${esc(x.name)}">`).join("")}${p.length > max ? `<span class="more">+${p.length - max}</span>` : ""}</div>`;
 }
@@ -591,7 +605,81 @@ function closeSheet() {
   $("#sheet").innerHTML = "";
   document.body.classList.remove("noscroll");
 }
-window.addEventListener("popstate", () => { if (state.openId) closeSheet(); });
+window.addEventListener("popstate", () => {
+  if (settingsOpen) closeSettings();
+  else if (state.openId) closeSheet();
+});
+
+// ---------- Settings ----------
+let settingsOpen = false;
+let allServices = null; // every streaming service in the region, from TMDB
+
+function openSettings() {
+  settingsOpen = true;
+  history.pushState({ settings: true }, "");
+  $("#settings").hidden = false;
+  document.body.classList.add("noscroll");
+  renderSettings();
+  if (!allServices) {
+    tmdb("/watch/providers/tv", { watch_region: CONFIG.region })
+      .then((d) => {
+        allServices = (d.results || [])
+          .sort((a, b) => (a.display_priorities?.[CONFIG.region] ?? a.display_priority) - (b.display_priorities?.[CONFIG.region] ?? b.display_priority))
+          .map((p) => ({ id: p.provider_id, name: p.provider_name, logo: p.logo_path }));
+        renderSettings();
+      })
+      .catch((err) => { allServices = []; toast("Could not load services: " + err.message); renderSettings(); });
+  }
+}
+function closeSettings() {
+  settingsOpen = false;
+  $("#settings").hidden = true;
+  $("#settings").innerHTML = "";
+  if (!state.openId) document.body.classList.remove("noscroll");
+}
+
+function renderSettings() {
+  if (!settingsOpen) return;
+  const el = $("#settings");
+  const scroll = el.scrollTop;
+  const mine = new Set(state.users[state.user.uid]?.services || []);
+  const others = members().filter((m) => m.uid !== state.user.uid);
+  const serviceBtn = (p) => `
+    <button class="svc ${mine.has(p.id) ? "on" : ""}" data-action="toggleService" data-pid="${p.id}">
+      ${p.logo ? `<img src="${img(p.logo, "w92")}" alt="">` : `<span class="nologo"></span>`}
+      <span>${esc(p.name)}</span>
+      <span class="check">${mine.has(p.id) ? "✓" : ""}</span>
+    </button>`;
+  const picked = (allServices || []).filter((p) => mine.has(p.id));
+  const rest = (allServices || []).filter((p) => !mine.has(p.id));
+  el.innerHTML = `
+    <div class="sheet-inner">
+      <header class="settings-top">
+        <button class="close static" data-action="close" aria-label="Close">←</button>
+        <h2>Settings</h2>
+      </header>
+      <div class="sheet-body flat">
+        <section>
+          <h3>Account</h3>
+          <p>Signed in as <b>${esc(myName())}</b> <span class="muted">(${esc(state.user.email)})</span></p>
+          <p class="muted small">The list is shared by ${esc(members().map((m) => m.name).join(" & "))} · App version ${APP_VERSION}</p>
+          <button class="btn danger wide" data-action="logout">Sign out</button>
+        </section>
+        <section>
+          <h3>Your streaming services</h3>
+          <p class="muted small">Pick the services you have. The app shows the services ${others.length ? "either of you has" : "you have"}, and lists the rest under "Also on". Pick none to show all.</p>
+          ${others.map((m) => {
+            const theirs = (state.users[m.uid]?.services || []).map((id) => allServices?.find((p) => p.id === id)?.name).filter(Boolean);
+            return theirs.length ? `<p class="muted small">${esc(m.name)} has: ${esc(theirs.join(", "))}</p>` : "";
+          }).join("")}
+          ${!allServices ? `<div class="splash small"><div class="spinner"></div></div>` : `
+            ${picked.length ? `<div class="svc-list">${picked.map(serviceBtn).join("")}</div><h4 class="muted small">All services in Sweden</h4>` : ""}
+            <div class="svc-list">${rest.map(serviceBtn).join("")}</div>`}
+        </section>
+      </div>
+    </div>`;
+  el.scrollTop = scroll;
+}
 
 function sheetHeader(show) {
   const statusText = { Ended: "Ended", Canceled: "Cancelled", "Returning Series": "Returning", "In Production": "In production" }[show.tmdbStatus] || "";
@@ -614,12 +702,17 @@ function sheetHeader(show) {
 
 function providersSection(show) {
   const prov = show.providers || {};
+  const { ours, others } = splitProviders(show);
+  const filtered = !!ourServices();
   return `
         <section>
           <h3>Where can we watch it?</h3>
-          ${prov.stream?.length
-            ? `<div class="providers">${prov.stream.map((p) => `<div class="prov">${p.logo ? `<img src="${img(p.logo, "w92")}" alt="">` : ""}<span>${esc(p.name)}</span></div>`).join("")}</div>`
-            : `<p class="muted">Not included in any streaming service in Sweden right now.</p>`}
+          ${ours.length
+            ? `<div class="providers">${ours.map((p) => `<div class="prov">${p.logo ? `<img src="${img(p.logo, "w92")}" alt="">` : ""}<span>${esc(p.name)}</span></div>`).join("")}</div>`
+            : filtered && others.length
+              ? `<p class="muted">Not on any of your services.</p>`
+              : `<p class="muted">Not included in any streaming service in Sweden right now.</p>`}
+          ${others.length ? `<p class="muted small">Also on: ${others.map((p) => esc(p.name)).join(", ")}</p>` : ""}
           ${prov.rent?.length ? `<p class="muted small">Rent/buy: ${prov.rent.map((p) => esc(p.name)).join(", ")}</p>` : ""}
           ${prov.link ? `<a class="small" href="${esc(prov.link)}" target="_blank" rel="noopener">See all options ↗</a>` : ""}
           <p class="attribution">Streaming info from JustWatch · updated ${fmtDate(show.fetchedAt)}</p>
@@ -760,11 +853,15 @@ document.addEventListener("click", async (e) => {
       }
       return;
     }
-    case "logout": return signOut(auth);
-    case "menu": {
-      const ms = members().map((m) => m.name).join(" & ");
-      if (confirm(`Signed in as ${myName()} (${state.user.email}).\nThe list is shared by: ${ms}\nApp version: ${APP_VERSION}\n\nDo you want to sign out?`)) signOut(auth);
-      return;
+    case "logout": if (settingsOpen) history.back(); return signOut(auth);
+    case "menu": return openSettings();
+    case "toggleService": {
+      const pid = Number(t.dataset.pid);
+      const cur = state.users[state.user.uid]?.services || [];
+      const next = cur.includes(pid) ? cur.filter((x) => x !== pid) : [...cur, pid];
+      state.users[state.user.uid] = { ...state.users[state.user.uid], services: next };
+      renderSettings();
+      return updateDoc(doc(db, "users", state.user.uid), { services: next }).catch((err) => toast("Could not save: " + err.message));
     }
     case "tab":
       state.tab = t.dataset.tab;
