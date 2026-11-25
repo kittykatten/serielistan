@@ -15,12 +15,15 @@ const img = (p, size = "w342") => (p ? `https://image.tmdb.org/t/p/${size}${p}` 
 const DAY = 86400000;
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString("sv-SE", { day: "numeric", month: "short" }) : "");
 
+// Röstning med tummar: värdet är antal tummar upp (0 = tumme ner).
+const THUMB = `<svg class="thumb" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 21h4V9H2v12zM23 10c0-1.1-.9-2-2-2h-6.3l1-4.6v-.3c0-.4-.2-.8-.4-1.1L14.2 1 7.6 7.6C7.2 7.9 7 8.4 7 9v10c0 1.1.9 2 2 2h9c.8 0 1.5-.5 1.8-1.2l3-7.1c.1-.2.2-.5.2-.7v-2z"/></svg>`;
+const thumbs = (v) => (v === 0 ? `<span class="thumbs down">${THUMB}</span>` : `<span class="thumbs">${THUMB.repeat(v)}</span>`);
 const INTEREST = [
-  { v: 2, emoji: "😍", label: "Vill gärna" },
-  { v: 1, emoji: "🤔", label: "Kanske" },
-  { v: 0, emoji: "🙅", label: "Nej tack" },
+  { v: 0, label: "Nej tack" },
+  { v: 1, label: "Kanske" },
+  { v: 2, label: "Gärna" },
 ];
-const interestEmoji = (v) => INTEREST.find((i) => i.v === v)?.emoji ?? "❔";
+const OURS_MIN = 3; // så många tummar upp totalt krävs för "Våra serier"
 const STATUS = { want: "Vill se", watching: "Tittar på", done: "Sett klart", dropped: "Avbruten" };
 
 let toastTimer;
@@ -311,20 +314,19 @@ function providerLogos(show, max = 3) {
 function interestRow(show) {
   return `<div class="votes">${members().map((m) => {
     const v = show.interest?.[m.uid];
-    return `<span class="vote ${v === undefined ? "pending" : ""}">${interestEmoji(v)} ${esc(m.name)}</span>`;
+    return `<span class="vote ${v === undefined ? "pending" : ""}">${v === undefined ? "–" : thumbs(v)} ${esc(m.name)}</span>`;
   }).join("")}</div>`;
 }
 
-const everyoneWants = (show) => {
-  const ms = members();
-  return ms.length > 1 && ms.every((m) => show.interest?.[m.uid] === 2);
-};
+const thumbsTotal = (show) => members().reduce((sum, m) => sum + (show.interest?.[m.uid] ?? 0), 0);
+const isOurs = (show) => thumbsTotal(show) >= OURS_MIN;
+const iWant = (show) => (show.interest?.[state.user.uid] ?? 0) >= 1;
 const interestScore = (show) => members().reduce((sum, m) => sum + (show.interest?.[m.uid] ?? 1), 0);
 
 function card(show) {
   let extra = "";
   if (show.status === "want") {
-    extra = `${everyoneWants(show) ? `<span class="pill good">💚 Ni vill båda se</span>` : ""}${interestRow(show)}`;
+    extra = `${isOurs(show) ? `<span class="pill good">Våra serier</span>` : ""}${interestRow(show)}`;
   } else if (show.status === "watching") {
     const n = nextEp(show);
     const { total, seen } = episodeCounts(show);
@@ -356,12 +358,12 @@ function renderList() {
   let header = "";
   if (state.tab === "want") {
     list = state.shows.filter((s) => s.status === "want");
-    if (state.wantFilter === "both") list = list.filter(everyoneWants);
-    if (state.wantFilter === "mine") list = list.filter((s) => s.interest?.[state.user.uid] === 2 && !everyoneWants(s));
+    if (state.wantFilter === "both") list = list.filter(isOurs);
+    if (state.wantFilter === "mine") list = list.filter((s) => iWant(s) && !isOurs(s));
     if (state.wantFilter === "pending") list = list.filter((s) => s.interest?.[state.user.uid] === undefined);
-    list.sort((a, b) => everyoneWants(b) - everyoneWants(a) || interestScore(b) - interestScore(a) || (b.addedAt || 0) - (a.addedAt || 0));
+    list.sort((a, b) => isOurs(b) - isOurs(a) || interestScore(b) - interestScore(a) || (b.addedAt || 0) - (a.addedAt || 0));
     header = `<div class="chips">
-      ${[["all", "Alla"], ["both", "💚 Våra serier"], ["mine", "😍 Mina serier"], ["pending", "❔ Väntar på mig"]]
+      ${[["all", "Alla"], ["both", "Våra serier"], ["mine", "Mina serier"], ["pending", "Väntar på mig"]]
         .map(([k, l]) => `<button class="chip ${state.wantFilter === k ? "on" : ""}" data-action="wantFilter" data-f="${k}">${l}</button>`).join("")}
     </div>`;
   } else if (state.tab === "watching") {
@@ -514,10 +516,10 @@ function renderSheet() {
             const mine = m.uid === uid;
             return `<div class="vote-row">
               <span class="who">${esc(m.name)}${mine ? " (du)" : ""}</span>
-              <div class="vote-btns">${INTEREST.map((i) => `<button class="${v === i.v ? "on" : ""}" ${mine ? `data-action="interest" data-v="${i.v}"` : "disabled"} title="${i.label}">${i.emoji}<small>${i.label}</small></button>`).join("")}</div>
+              <div class="vote-btns">${INTEREST.map((i) => `<button class="${v === i.v ? "on" : ""}" ${mine ? `data-action="interest" data-v="${i.v}"` : "disabled"} title="${i.label}" aria-label="${i.label}">${thumbs(i.v)}<small>${i.label}</small></button>`).join("")}</div>
             </div>`;
           }).join("")}
-          ${everyoneWants(show) ? `<p class="pill good">💚 Ni vill båda se den här!</p>` : ""}
+          ${isOurs(show) ? `<p class="pill good">Våra serier · ${thumbsTotal(show)} tummar upp</p>` : ""}
         </section>
 
         ${seasonsOf(show).length ? `
