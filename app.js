@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v12";
+const APP_VERSION = "v13";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -718,7 +718,7 @@ function renderSheet() {
             const aired = isAired(show, season.n, e);
             return `<button class="ep ${isWatched(show, season.n, e) ? "seen" : ""}" ${aired ? `data-action="setEp" data-s="${season.n}" data-e="${e}"` : "disabled"}>${e}</button>`;
           }).join("")}</div>
-          <p class="muted small">Tap an episode to mark it and everything before it as watched.</p>` : ""}
+          <p class="muted small">Tap an episode to mark it and everything before it as watched. Tap a watched episode to unmark it and everything after it.</p>` : ""}
           ${show.progress?.s ? `<button class="btn link small" data-action="resetEp">Reset episodes</button>` : ""}
         </section>` : ""}
 
@@ -792,8 +792,17 @@ document.addEventListener("click", async (e) => {
     case "setEp": {
       const s = Number(t.dataset.s), ep = Number(t.dataset.e);
       const show = showById(id);
-      const patch = { progress: { s, e: ep } };
-      if (show.status === "want") patch.status = "watching";
+      let progress = { s, e: ep };
+      // Tapping an episode that is already watched unmarks it and everything after it.
+      if (isWatched(show, s, ep)) {
+        if (ep > 1) progress = { s, e: ep - 1 };
+        else {
+          const prev = [...seasonsOf(show)].reverse().find((x) => x.n < s);
+          progress = prev ? { s: prev.n, e: prev.eps } : { s: 0, e: 0 };
+        }
+      }
+      const patch = { progress };
+      if (show.status === "want" || show.status === "done") patch.status = "watching";
       return update(id, patch);
     }
     case "resetEp": return update(id, { progress: { s: 0, e: 0 } });
