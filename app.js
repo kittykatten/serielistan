@@ -210,6 +210,14 @@ function fmtDuration(min) {
   const h = Math.floor(min / 60), m = min % 60;
   return h ? (m ? `${h} h ${m} min` : `${h} h`) : `${m} min`;
 }
+// "20 episodes · 16 h 2 min" for everything aired so far.
+function totalText(show) {
+  const { total } = episodeCounts(show);
+  if (!total) return "";
+  const m = runtimeMinutes(show, false);
+  return `${total} episode${total === 1 ? "" : "s"}${m ? ` · ${fmtDuration(m)}` : ""}`;
+}
+
 // "17 episodes · 13 h 30 min left" for aired episodes not yet watched.
 function timeLeft(show) {
   const { total, seen } = episodeCounts(show);
@@ -395,8 +403,7 @@ const interestScore = (show) => members().reduce((sum, m) => sum + (show.interes
 function card(show) {
   let extra = "";
   if (show.status === "want") {
-    const tot = runtimeMinutes(show, false);
-    extra = `${isOurs(show) ? `<span class="pill good">Our shows</span>` : ""}${awaitsMyVote(show) ? `<span class="pill ask">Waiting for your vote</span>` : ""}${interestRow(show)}${tot ? `<div class="muted small">${fmtDuration(tot)} in total</div>` : ""}`;
+    extra = `${isOurs(show) ? `<span class="pill good">Our shows</span>` : ""}${awaitsMyVote(show) ? `<span class="pill ask">Waiting for your vote</span>` : ""}${interestRow(show)}${totalText(show) ? `<div class="muted small">${totalText(show)}</div>` : ""}`;
   } else if (show.status === "watching") {
     const n = nextEp(show);
     const { total, seen } = episodeCounts(show);
@@ -588,11 +595,10 @@ function aboutSection(show) {
     [`https://www.themoviedb.org/tv/${show.tmdbId}`, "TMDB"],
     show.imdbId && [`https://www.imdb.com/title/${encodeURIComponent(show.imdbId)}/`, "IMDb"],
   ].filter(Boolean);
-  const tot = runtimeMinutes(show, false);
   const facts = [
     show.creators?.length && `<div><span class="muted">Created by</span> ${esc(show.creators.join(", "))}</div>`,
     show.networks?.length && `<div><span class="muted">Network</span> ${esc(show.networks.join(", "))}</div>`,
-    tot && `<div><span class="muted">Total runtime</span> ${fmtDuration(tot)}${show.nextAir ? " so far" : ""}</div>`,
+    totalText(show) && `<div><span class="muted">Length</span> ${totalText(show)}${show.nextAir ? " so far" : ""}</div>`,
   ].filter(Boolean).join("");
   return `
         ${show.overview ? `<p class="overview">${esc(show.overview)}</p>` : `<p class="muted">No description available.</p>`}
