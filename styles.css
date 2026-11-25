@@ -183,3 +183,4 @@ main { padding: 4px 12px 12px; max-width: 720px; margin: 0 auto; }
 .chip-count { display: inline-block; min-width: 18px; height: 18px; margin-left: 4px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
 .btn.danger { background: none; border: 1px solid rgba(255, 138, 138, 0.4); color: #ff8a8a; margin-top: 8px; }
 .left { font-size: 14px; font-weight: 600; margin: 2px 0 4px; }
+.pill.later { background: rgba(160, 170, 255, 0.15); color: #b8bfff; }

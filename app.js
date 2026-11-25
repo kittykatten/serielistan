@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v14";
+const APP_VERSION = "v15";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -421,12 +421,17 @@ function interestRow(show) {
 const thumbsTotal = (show) => members().reduce((sum, m) => sum + (show.interest?.[m.uid] ?? 0), 0);
 const isOurs = (show) => thumbsTotal(show) >= OURS_MIN;
 const iWant = (show) => (show.interest?.[state.user.uid] ?? 0) >= 1;
+// Everyone gave at least one thumb up, but not enough for Our shows: interesting, lower priority.
+const isMaybeLater = (show) => {
+  const ms = members();
+  return ms.length > 1 && !isOurs(show) && ms.every((m) => (show.interest?.[m.uid] ?? 0) >= 1);
+};
 const interestScore = (show) => members().reduce((sum, m) => sum + (show.interest?.[m.uid] ?? 1), 0);
 
 function card(show) {
   let extra = "";
   if (show.status === "want") {
-    extra = `${isOurs(show) ? `<span class="pill good">Our shows</span>` : ""}${awaitsMyVote(show) ? `<span class="pill ask">Waiting for your vote</span>` : ""}${interestRow(show)}${totalText(show) ? `<div class="muted small">${totalText(show)}</div>` : ""}`;
+    extra = `${isOurs(show) ? `<span class="pill good">Our shows</span>` : ""}${isMaybeLater(show) ? `<span class="pill later">Maybe later</span>` : ""}${awaitsMyVote(show) ? `<span class="pill ask">Waiting for your vote</span>` : ""}${interestRow(show)}${totalText(show) ? `<div class="muted small">${totalText(show)}</div>` : ""}`;
   } else if (show.status === "watching") {
     const n = nextEp(show);
     const { total, seen } = episodeCounts(show);
@@ -460,11 +465,12 @@ function renderList() {
   if (state.tab === "want") {
     list = state.shows.filter((s) => s.status === "want");
     if (state.wantFilter === "both") list = list.filter(isOurs);
-    if (state.wantFilter === "mine") list = list.filter((s) => iWant(s) && !isOurs(s));
+    if (state.wantFilter === "later") list = list.filter(isMaybeLater);
+    if (state.wantFilter === "mine") list = list.filter((s) => iWant(s) && !isOurs(s) && !isMaybeLater(s));
     if (state.wantFilter === "pending") list = list.filter(awaitsMyVote);
-    list.sort((a, b) => isOurs(b) - isOurs(a) || interestScore(b) - interestScore(a) || (b.addedAt || 0) - (a.addedAt || 0));
+    list.sort((a, b) => isOurs(b) - isOurs(a) || isMaybeLater(b) - isMaybeLater(a) || interestScore(b) - interestScore(a) || (b.addedAt || 0) - (a.addedAt || 0));
     header = `<div class="chips">
-      ${[["all", "All"], ["both", "Our shows"], ["mine", "My shows"], ["pending", "Waiting for me"]]
+      ${[["all", "All"], ["both", "Our shows"], ["later", "Maybe later"], ["mine", "My shows"], ["pending", "Waiting for me"]]
         .map(([k, l]) => {
           const count = k === "pending" ? myPending().length : 0;
           return `<button class="chip ${state.wantFilter === k ? "on" : ""}" data-action="wantFilter" data-f="${k}">${l}${count ? ` <span class="chip-count">${count}</span>` : ""}</button>`;
@@ -701,6 +707,7 @@ function renderSheet() {
             </div>`;
           }).join("")}
           ${isOurs(show) ? `<p class="pill good">Our shows · ${thumbsTotal(show)} thumbs up</p>` : ""}
+          ${isMaybeLater(show) ? `<p class="pill later">Maybe later · you both gave it a thumb up</p>` : ""}
         </section>
 
         ${seasonsOf(show).length ? `
