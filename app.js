@@ -24,7 +24,7 @@ const INTEREST = [
   { v: 2, label: "Yes please" },
 ];
 const OURS_MIN = 3; // total thumbs up needed for "Our shows"
-const STATUS = { want: "Want", watching: "Watching", done: "Finished", dropped: "Dropped" };
+const STATUS = { want: "List", watching: "Watching", done: "Finished", dropped: "Dropped" };
 
 let toastTimer;
 function toast(msg) {
@@ -210,7 +210,14 @@ function fmtDuration(min) {
   const h = Math.floor(min / 60), m = min % 60;
   return h ? (m ? `${h} h ${m} min` : `${h} h`) : `${m} min`;
 }
-const timeLeft = (show) => { const m = runtimeMinutes(show, true); return m ? `${fmtDuration(m)} left` : ""; };
+// "17 episodes · 13 h 30 min left" for aired episodes not yet watched.
+function timeLeft(show) {
+  const { total, seen } = episodeCounts(show);
+  const left = total - seen;
+  if (!left) return "";
+  const m = runtimeMinutes(show, true);
+  return `${left} episode${left === 1 ? "" : "s"}${m ? ` · ${fmtDuration(m)}` : ""} left`;
+}
 
 // ---------- State ----------
 const state = {
@@ -313,7 +320,7 @@ async function addShow(id) {
       addedAt: Date.now(),
       updatedAt: Date.now(),
     });
-    toast(`${data.name} added to Want to watch`);
+    toast(`${data.name} added to the list`);
   } catch (err) { toast("Could not add: " + err.message); }
 }
 
@@ -343,7 +350,7 @@ function renderShell() {
     </header>
     <main id="main"></main>
     <nav class="tabs">
-      ${[["want", "🍿", "Want"], ["watching", "▶️", "Watching"], ["done", "✅", "Watched"], ["search", "🔍", "Search"]]
+      ${[["want", "🍿", "List"], ["watching", "▶️", "Watching"], ["done", "✅", "Watched"], ["search", "🔍", "Search"]]
         .map(([k, i, l]) => `<button data-action="tab" data-tab="${k}"><span class="ti">${i}</span><span>${l}</span><span class="badge" data-badge="${k}"></span></button>`).join("")}
     </nav>`;
   render();
@@ -354,8 +361,8 @@ function render() {
   const av = $(".avatar");
   if (av) av.textContent = (myName() || "?").slice(0, 1).toUpperCase();
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab));
-  // Badge the Want tab when there are shows you have not voted on
-  const pending = state.shows.filter((s) => s.status === "want" && s.interest?.[state.user.uid] === undefined).length;
+  // Badge the List tab when there are shows you have not voted on
+  const pending = myPending().length;
   const badge = document.querySelector('[data-badge="want"]');
   if (badge) { badge.textContent = pending || ""; badge.hidden = !pending; }
 
@@ -369,6 +376,9 @@ function providerLogos(show, max = 3) {
   if (!p.length) return "";
   return `<div class="logos">${p.slice(0, max).filter((x) => x.logo).map((x) => `<img src="${img(x.logo, "w92")}" alt="${esc(x.name)}" title="${esc(x.name)}">`).join("")}${p.length > max ? `<span class="more">+${p.length - max}</span>` : ""}</div>`;
 }
+
+const awaitsMyVote = (show) => show.interest?.[state.user.uid] === undefined;
+const myPending = () => state.shows.filter((s) => s.status === "want" && awaitsMyVote(s));
 
 function interestRow(show) {
   return `<div class="votes">${members().map((m) => {
@@ -386,14 +396,15 @@ function card(show) {
   let extra = "";
   if (show.status === "want") {
     const tot = runtimeMinutes(show, false);
-    extra = `${isOurs(show) ? `<span class="pill good">Our shows</span>` : ""}${interestRow(show)}${tot ? `<div class="muted small">${fmtDuration(tot)} in total</div>` : ""}`;
+    extra = `${isOurs(show) ? `<span class="pill good">Our shows</span>` : ""}${awaitsMyVote(show) ? `<span class="pill ask">Waiting for your vote</span>` : ""}${interestRow(show)}${tot ? `<div class="muted small">${fmtDuration(tot)} in total</div>` : ""}`;
   } else if (show.status === "watching") {
     const n = nextEp(show);
     const { total, seen } = episodeCounts(show);
     const pct = total ? Math.round((seen / total) * 100) : 0;
     extra = `
-      <div class="next">${n ? `Next: <b>${epLabel(n)}</b>${timeLeft(show) ? ` <span class="muted small">· ${timeLeft(show)}</span>` : ""}` : show.nextAir ? `Caught up · new episode ${fmtDate(show.nextAir.date)}` : show.ended ? "All episodes watched" : "Caught up · waiting for new episodes"}</div>
-      <div class="bar"><span style="width:${pct}%"></span></div>`;
+      <div class="next">${n ? `Next: <b>${epLabel(n)}</b>` : show.nextAir ? `Caught up · new episode ${fmtDate(show.nextAir.date)}` : show.ended ? "All episodes watched" : "Caught up · waiting for new episodes"}</div>
+      <div class="bar"><span style="width:${pct}%"></span></div>
+      ${n ? `<div class="muted small">${timeLeft(show)}</div>` : ""}`;
   } else {
     extra = `<div class="muted small">${STATUS[show.status]}${show.status === "done" && !show.ended && show.nextAir ? ` · new season ${fmtDate(show.nextAir.date)}` : ""}</div>`;
   }
@@ -420,11 +431,14 @@ function renderList() {
     list = state.shows.filter((s) => s.status === "want");
     if (state.wantFilter === "both") list = list.filter(isOurs);
     if (state.wantFilter === "mine") list = list.filter((s) => iWant(s) && !isOurs(s));
-    if (state.wantFilter === "pending") list = list.filter((s) => s.interest?.[state.user.uid] === undefined);
+    if (state.wantFilter === "pending") list = list.filter(awaitsMyVote);
     list.sort((a, b) => isOurs(b) - isOurs(a) || interestScore(b) - interestScore(a) || (b.addedAt || 0) - (a.addedAt || 0));
     header = `<div class="chips">
       ${[["all", "All"], ["both", "Our shows"], ["mine", "My shows"], ["pending", "Waiting for me"]]
-        .map(([k, l]) => `<button class="chip ${state.wantFilter === k ? "on" : ""}" data-action="wantFilter" data-f="${k}">${l}</button>`).join("")}
+        .map(([k, l]) => {
+          const count = k === "pending" ? myPending().length : 0;
+          return `<button class="chip ${state.wantFilter === k ? "on" : ""}" data-action="wantFilter" data-f="${k}">${l}${count ? ` <span class="chip-count">${count}</span>` : ""}</button>`;
+        }).join("")}
     </div>`;
   } else if (state.tab === "watching") {
     list = state.shows.filter((s) => s.status === "watching")
@@ -435,7 +449,7 @@ function renderList() {
   }
   const empty = {
     want: state.wantFilter === "all" ? "No shows here yet. Tap <b>Search</b> to add one." : "No shows match this filter.",
-    watching: "You are not watching anything right now. Pick a show from <b>Want</b>.",
+    watching: "You are not watching anything right now. Pick a show from <b>List</b>.",
     done: "Shows you have finished end up here.",
   }[state.tab];
   main.innerHTML = header + (list.length ? `<div class="list">${list.map(card).join("")}</div>` : `<p class="empty">${empty}</p>`);
@@ -606,7 +620,7 @@ function renderPreview(el, show) {
   el.innerHTML = `
     <div class="sheet-inner">
       ${sheetHeader(show)}
-        <button class="btn primary wide" data-action="add" data-id="${show.tmdbId}">＋ Add to Want to watch</button>
+        <button class="btn primary wide" data-action="add" data-id="${show.tmdbId}">＋ Add to list</button>
         ${aboutSection(show)}
         ${providersSection(show)}
         ${castSection(show)}
@@ -654,7 +668,8 @@ function renderSheet() {
 
         ${seasonsOf(show).length ? `
         <section>
-          <h3>Episodes <span class="muted small">${seen} of ${total} watched${seen < total && timeLeft(show) ? ` · ${timeLeft(show)}` : ""}</span></h3>
+          <h3>Episodes <span class="muted small">${seen} of ${total} watched</span></h3>
+          ${seen < total ? `<p class="left">${timeLeft(show)}</p>` : ""}
           <div class="bar big"><span style="width:${total ? Math.round((seen / total) * 100) : 0}%"></span></div>
           ${n ? `<div class="next-row"><div><span class="muted small">Next episode</span><b>${epLabel(n)}</b></div><button class="btn primary" data-action="advance" data-id="${show.tmdbId}">✓ Mark as watched</button></div>`
               : `<p class="muted">${show.nextAir ? `Next episode (${epLabel(show.nextAir)}) airs ${fmtDate(show.nextAir.date)}.` : seen && seen === total ? "You have watched every episode so far." : ""}</p>`}
@@ -672,9 +687,9 @@ function renderSheet() {
 
         ${castSection(show)}
 
+        <button class="btn danger wide" data-action="delete">Remove from list</button>
         <div class="danger-zone">
           <button class="btn link small" data-action="refresh">↻ Refresh info</button>
-          <button class="btn link small red" data-action="delete">Remove from list</button>
         </div>
       </div>
     </div>`;
