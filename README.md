@@ -1,4 +1,4 @@
-# Serielistan 📺
+# What are we watching now? 📺
 
 Our shared list of TV shows: https://kittykatten.github.io/serielistan/
 
