@@ -21,7 +21,7 @@ body {
 }
 body.noscroll { overflow: hidden; }
 h1, h2, h3 { margin: 0; line-height: 1.2; }
-button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; }
+button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; touch-action: manipulation; }
 input {
   font: inherit; color: var(--text); background: var(--surface2); border: 1px solid var(--line);
   border-radius: 12px; padding: 12px 14px; width: 100%; outline: none;

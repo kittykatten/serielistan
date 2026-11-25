@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v13";
+const APP_VERSION = "v14";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -715,8 +715,10 @@ function renderSheet() {
             return `<button class="chip ${s.n === season?.n ? "on" : ""}" data-action="season" data-n="${s.n}">S${s.n}${allSeen ? " ✓" : ""}</button>`;
           }).join("")}</div>
           ${season ? `<div class="eps">${Array.from({ length: season.eps }, (_, i) => i + 1).map((e) => {
-            const aired = isAired(show, season.n, e);
-            return `<button class="ep ${isWatched(show, season.n, e) ? "seen" : ""}" ${aired ? `data-action="setEp" data-s="${season.n}" data-e="${e}"` : "disabled"}>${e}</button>`;
+            const seen = isWatched(show, season.n, e);
+            // A watched episode can always be tapped (to unmark it), even if TMDB says it has not aired.
+            const tappable = seen || isAired(show, season.n, e);
+            return `<button class="ep ${seen ? "seen" : ""}" ${tappable ? `data-action="setEp" data-s="${season.n}" data-e="${e}"` : "disabled"}>${e}</button>`;
           }).join("")}</div>
           <p class="muted small">Tap an episode to mark it and everything before it as watched. Tap a watched episode to unmark it and everything after it.</p>` : ""}
           ${show.progress?.s ? `<button class="btn link small" data-action="resetEp">Reset episodes</button>` : ""}
