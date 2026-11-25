@@ -9,5 +9,5 @@ export const CONFIG = {
   },
   tmdbApiKey: "a96d4bb1d0665de0e4fbc2f522bdb347",
   region: "SE",
-  language: "sv-SE",
+  language: "en-US",
 };

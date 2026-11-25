@@ -1,5 +1,5 @@
 # Serielistan 📺
 
-Vår gemensamma lista över tv-serier: https://kittykatten.github.io/serielistan/
+Our shared list of TV shows: https://kittykatten.github.io/serielistan/
 
-Seriedata från TMDB, streaminginfo från JustWatch.
+Show data from TMDB, streaming info from JustWatch.

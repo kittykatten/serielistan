@@ -8,23 +8,23 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { CONFIG } from "./config.js";
 
-// ---------- Hjälpfunktioner ----------
+// ---------- Helpers ----------
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const img = (p, size = "w342") => (p ? `https://image.tmdb.org/t/p/${size}${p}` : "");
 const DAY = 86400000;
-const fmtDate = (d) => (d ? new Date(d).toLocaleDateString("sv-SE", { day: "numeric", month: "short" }) : "");
+const fmtDate = (d) => (d ? new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "");
 
-// Röstning med tummar: värdet är antal tummar upp (0 = tumme ner).
+// Voting with thumbs: the value is the number of thumbs up (0 = thumbs down).
 const THUMB = `<svg class="thumb" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 21h4V9H2v12zM23 10c0-1.1-.9-2-2-2h-6.3l1-4.6v-.3c0-.4-.2-.8-.4-1.1L14.2 1 7.6 7.6C7.2 7.9 7 8.4 7 9v10c0 1.1.9 2 2 2h9c.8 0 1.5-.5 1.8-1.2l3-7.1c.1-.2.2-.5.2-.7v-2z"/></svg>`;
 const thumbs = (v) => (v === 0 ? `<span class="thumbs down">${THUMB}</span>` : `<span class="thumbs">${THUMB.repeat(v)}</span>`);
 const INTEREST = [
-  { v: 0, label: "Nej tack" },
-  { v: 1, label: "Kanske" },
-  { v: 2, label: "Gärna" },
+  { v: 0, label: "No thanks" },
+  { v: 1, label: "Maybe" },
+  { v: 2, label: "Yes please" },
 ];
-const OURS_MIN = 3; // så många tummar upp totalt krävs för "Våra serier"
-const STATUS = { want: "Vill se", watching: "Tittar på", done: "Sett klart", dropped: "Avbruten" };
+const OURS_MIN = 3; // total thumbs up needed for "Our shows"
+const STATUS = { want: "Want", watching: "Watching", done: "Finished", dropped: "Dropped" };
 
 let toastTimer;
 function toast(msg) {
@@ -35,17 +35,16 @@ function toast(msg) {
   toastTimer = setTimeout(() => (t.hidden = true), 2600);
 }
 
-// ---------- Kontroll av inställningar ----------
+// ---------- Config check ----------
 const configured = !JSON.stringify(CONFIG).includes("KLISTRA-IN");
 if (!configured) {
   $("#app").innerHTML = `
     <div class="center-page">
       <div class="logo">📺</div>
-      <h1>Nästan klart!</h1>
-      <p>Öppna <b>config.js</b> och fyll i dina nycklar från Firebase och TMDB.
-      Instruktioner finns i <b>INSTALLERA.md</b>.</p>
+      <h1>Almost there!</h1>
+      <p>Open <b>config.js</b> and fill in your Firebase and TMDB keys.</p>
     </div>`;
-  throw new Error("config.js är inte ifylld");
+  throw new Error("config.js is not filled in");
 }
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
@@ -71,7 +70,7 @@ async function tmdbOnce(path, params) {
   return res.json();
 }
 
-// Vid serverfel hos TMDB: försök igen, och sist på engelska.
+// On TMDB server errors: retry, then fall back to English.
 async function tmdb(path, params = {}) {
   try { return await tmdbOnce(path, params); }
   catch (err) {
@@ -122,11 +121,12 @@ async function fetchShowData(id) {
       rent: providerList(wp.rent, wp.buy),
       link: wp.link || null,
     },
+    lang: CONFIG.language,
     fetchedAt: Date.now(),
   };
 }
 
-// ---------- Avsnittslogik ----------
+// ---------- Episode logic ----------
 const seasonsOf = (s) => s.seasons || [];
 const isAired = (show, s, e) => !show.lastAired || s < show.lastAired.s || (s === show.lastAired.s && e <= show.lastAired.e);
 const isWatched = (show, s, e) => {
@@ -152,9 +152,9 @@ function episodeCounts(show) {
   }
   return { total, seen };
 }
-const epLabel = (x) => `S${x.s} · A${x.e}`;
+const epLabel = (x) => `S${x.s} · E${x.e}`;
 
-// ---------- Tillstånd ----------
+// ---------- State ----------
 const state = {
   user: null,
   users: {}, // uid -> {name}
@@ -163,6 +163,7 @@ const state = {
   tab: localStorage.getItem("tab") || "watching",
   wantFilter: "all",
   openId: null,
+  preview: null, // show data for a search result that is not in the list
   sheetSeason: null,
   search: { q: "", results: null, trending: null, loading: false },
 };
@@ -171,7 +172,7 @@ const members = () => Object.entries(state.users).map(([uid, u]) => ({ uid, name
   .sort((a, b) => (a.uid === state.user?.uid ? -1 : b.uid === state.user?.uid ? 1 : a.name.localeCompare(b.name)));
 const myName = () => state.users[state.user?.uid]?.name;
 
-// ---------- Inloggning ----------
+// ---------- Sign-in ----------
 let unsubs = [];
 onAuthStateChanged(auth, async (user) => {
   unsubs.forEach((u) => u()); unsubs = [];
@@ -195,10 +196,10 @@ function renderLogin(error = "") {
     <div class="center-page">
       <div class="logo">📺</div>
       <h1>Serielistan</h1>
-      <p class="muted">Er gemensamma lista över tv-serier</p>
+      <p class="muted">Your shared list of TV shows</p>
       <button class="btn google" data-action="login">
         <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
-        Logga in med Google
+        Sign in with Google
       </button>
       ${error ? `<p class="error">${esc(error)}</p>` : ""}
     </div>`;
@@ -208,14 +209,14 @@ function renderNoAccess(err) {
   $("#app").innerHTML = `
     <div class="center-page">
       <div class="logo">🔒</div>
-      <h1>Ingen behörighet</h1>
-      <p><b>${esc(state.user?.email)}</b> finns inte med i listan över tillåtna e-postadresser i Firestore-reglerna.</p>
+      <h1>No access</h1>
+      <p><b>${esc(state.user?.email)}</b> is not on the list of allowed email addresses in the Firestore rules.</p>
       <p class="muted small">${esc(err?.code || err?.message || "")}</p>
-      <button class="btn" data-action="logout">Logga ut</button>
+      <button class="btn" data-action="logout">Sign out</button>
     </div>`;
 }
 
-// ---------- Data i realtid ----------
+// ---------- Realtime data ----------
 let refreshedThisSession = false;
 function startListening() {
   if (unsubs.length) return;
@@ -233,16 +234,16 @@ function startListening() {
   renderShell();
 }
 
-// Hämta nya avsnitt och streaminginfo för serier ni tittar på (högst en gång per dygn).
+// Fetch new episodes and streaming info for active shows (at most once a day, or when the language changed).
 async function refreshStale() {
-  const stale = state.shows.filter((s) => (s.status === "watching" || s.status === "want") && Date.now() - (s.fetchedAt || 0) > DAY);
-  for (const s of stale.slice(0, 15)) {
+  const stale = state.shows.filter((s) => (s.status === "watching" || s.status === "want") && (Date.now() - (s.fetchedAt || 0) > DAY || s.lang !== CONFIG.language));
+  for (const s of stale.slice(0, 40)) {
     try { await updateDoc(doc(db, "shows", String(s.tmdbId)), await fetchShowData(s.tmdbId)); } catch {}
   }
 }
 
 async function addShow(id) {
-  if (showById(id)) return toast("Serien finns redan i listan");
+  if (showById(id)) return toast("This show is already in your list");
   try {
     const data = await fetchShowData(id);
     await setDoc(doc(db, "shows", String(id)), {
@@ -254,13 +255,13 @@ async function addShow(id) {
       addedAt: Date.now(),
       updatedAt: Date.now(),
     });
-    toast(`${data.name} lades till i Vill se`);
-  } catch (err) { toast("Kunde inte lägga till: " + err.message); }
+    toast(`${data.name} added to Want to watch`);
+  } catch (err) { toast("Could not add: " + err.message); }
 }
 
 function update(id, patch) {
   return updateDoc(doc(db, "shows", String(id)), { ...patch, updatedAt: Date.now() })
-    .catch((err) => toast("Kunde inte spara: " + err.message));
+    .catch((err) => toast("Could not save: " + err.message));
 }
 
 function advance(id) {
@@ -270,21 +271,21 @@ function advance(id) {
   const patch = { progress: { s: n.s, e: n.e } };
   if (show.status !== "watching") patch.status = "watching";
   const after = nextEp({ ...show, progress: n });
-  if (!after && show.ended) { patch.status = "done"; toast(`🎉 Ni har sett klart ${show.name}!`); }
-  else toast(`✓ ${epLabel(n)} sett`);
+  if (!after && show.ended) { patch.status = "done"; toast(`🎉 You finished ${show.name}!`); }
+  else toast(`✓ ${epLabel(n)} watched`);
   update(id, patch);
 }
 
-// ---------- Huvudvy ----------
+// ---------- Main view ----------
 function renderShell() {
   $("#app").innerHTML = `
     <header class="top">
       <h1>📺 Serielistan</h1>
-      <button class="avatar" data-action="menu" aria-label="Meny">${esc((myName() || "?").slice(0, 1).toUpperCase())}</button>
+      <button class="avatar" data-action="menu" aria-label="Menu">${esc((myName() || "?").slice(0, 1).toUpperCase())}</button>
     </header>
     <main id="main"></main>
     <nav class="tabs">
-      ${[["want", "🍿", "Vill se"], ["watching", "▶️", "Tittar på"], ["done", "✅", "Sett"], ["search", "🔍", "Sök"]]
+      ${[["want", "🍿", "Want"], ["watching", "▶️", "Watching"], ["done", "✅", "Watched"], ["search", "🔍", "Search"]]
         .map(([k, i, l]) => `<button data-action="tab" data-tab="${k}"><span class="ti">${i}</span><span>${l}</span><span class="badge" data-badge="${k}"></span></button>`).join("")}
     </nav>`;
   render();
@@ -295,7 +296,7 @@ function render() {
   const av = $(".avatar");
   if (av) av.textContent = (myName() || "?").slice(0, 1).toUpperCase();
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab));
-  // Märk fliken Vill se när du har serier att ta ställning till
+  // Badge the Want tab when there are shows you have not voted on
   const pending = state.shows.filter((s) => s.status === "want" && s.interest?.[state.user.uid] === undefined).length;
   const badge = document.querySelector('[data-badge="want"]');
   if (badge) { badge.textContent = pending || ""; badge.hidden = !pending; }
@@ -326,19 +327,19 @@ const interestScore = (show) => members().reduce((sum, m) => sum + (show.interes
 function card(show) {
   let extra = "";
   if (show.status === "want") {
-    extra = `${isOurs(show) ? `<span class="pill good">Våra serier</span>` : ""}${interestRow(show)}`;
+    extra = `${isOurs(show) ? `<span class="pill good">Our shows</span>` : ""}${interestRow(show)}`;
   } else if (show.status === "watching") {
     const n = nextEp(show);
     const { total, seen } = episodeCounts(show);
     const pct = total ? Math.round((seen / total) * 100) : 0;
     extra = `
-      <div class="next">${n ? `Nästa: <b>${epLabel(n)}</b>` : show.nextAir ? `Ikapp · nytt avsnitt ${fmtDate(show.nextAir.date)}` : show.ended ? "Alla avsnitt sedda" : "Ikapp · väntar på nya avsnitt"}</div>
+      <div class="next">${n ? `Next: <b>${epLabel(n)}</b>` : show.nextAir ? `Caught up · new episode ${fmtDate(show.nextAir.date)}` : show.ended ? "All episodes watched" : "Caught up · waiting for new episodes"}</div>
       <div class="bar"><span style="width:${pct}%"></span></div>`;
   } else {
-    extra = `<div class="muted small">${STATUS[show.status]}${show.status === "done" && !show.ended && show.nextAir ? ` · ny säsong ${fmtDate(show.nextAir.date)}` : ""}</div>`;
+    extra = `<div class="muted small">${STATUS[show.status]}${show.status === "done" && !show.ended && show.nextAir ? ` · new season ${fmtDate(show.nextAir.date)}` : ""}</div>`;
   }
   const quick = show.status === "watching" && nextEp(show)
-    ? `<button class="quick" data-action="advance" data-id="${show.tmdbId}" aria-label="Markera nästa avsnitt som sett">✓</button>` : "";
+    ? `<button class="quick" data-action="advance" data-id="${show.tmdbId}" aria-label="Mark next episode as watched">✓</button>` : "";
   return `
     <article class="card show" data-action="open" data-id="${show.tmdbId}">
       <div class="poster">${show.poster ? `<img loading="lazy" src="${img(show.poster, "w185")}" alt="">` : "📺"}</div>
@@ -363,7 +364,7 @@ function renderList() {
     if (state.wantFilter === "pending") list = list.filter((s) => s.interest?.[state.user.uid] === undefined);
     list.sort((a, b) => isOurs(b) - isOurs(a) || interestScore(b) - interestScore(a) || (b.addedAt || 0) - (a.addedAt || 0));
     header = `<div class="chips">
-      ${[["all", "Alla"], ["both", "Våra serier"], ["mine", "Mina serier"], ["pending", "Väntar på mig"]]
+      ${[["all", "All"], ["both", "Our shows"], ["mine", "My shows"], ["pending", "Waiting for me"]]
         .map(([k, l]) => `<button class="chip ${state.wantFilter === k ? "on" : ""}" data-action="wantFilter" data-f="${k}">${l}</button>`).join("")}
     </div>`;
   } else if (state.tab === "watching") {
@@ -374,20 +375,20 @@ function renderList() {
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   }
   const empty = {
-    want: state.wantFilter === "all" ? "Inga serier här än. Tryck på <b>Sök</b> för att lägga till en." : "Inga serier matchar filtret.",
-    watching: "Ni tittar inte på något just nu. Välj en serie från <b>Vill se</b>.",
-    done: "Här hamnar serierna ni har sett klart.",
+    want: state.wantFilter === "all" ? "No shows here yet. Tap <b>Search</b> to add one." : "No shows match this filter.",
+    watching: "You are not watching anything right now. Pick a show from <b>Want</b>.",
+    done: "Shows you have finished end up here.",
   }[state.tab];
   main.innerHTML = header + (list.length ? `<div class="list">${list.map(card).join("")}</div>` : `<p class="empty">${empty}</p>`);
 }
 
-// ---------- Sök ----------
+// ---------- Search ----------
 let searchTimer;
 function renderSearch() {
   const main = $("#main");
   if (!$("#searchInput")) {
     main.innerHTML = `
-      <div class="searchbar"><input id="searchInput" type="search" placeholder="Sök tv-serie…" autocomplete="off" value="${esc(state.search.q)}"></div>
+      <div class="searchbar"><input id="searchInput" type="search" placeholder="Search TV shows…" autocomplete="off" value="${esc(state.search.q)}"></div>
       <div id="results"></div>`;
     $("#searchInput").oninput = (e) => {
       state.search.q = e.target.value;
@@ -404,7 +405,7 @@ async function loadTrending() {
     const d = await tmdb("/trending/tv/week");
     state.search.trending = d.results || [];
     renderResults();
-  } catch (err) { $("#results").innerHTML = `<p class="error">Kunde inte nå TMDB (${esc(err.message)}). Kontrollera API-nyckeln i config.js.</p>`; }
+  } catch (err) { $("#results").innerHTML = `<p class="error">Could not reach TMDB (${esc(err.message)}). Check the API key in config.js.</p>`; }
 }
 
 async function doSearch() {
@@ -415,7 +416,7 @@ async function doSearch() {
     const d = await tmdb("/search/tv", { query: q, include_adult: "false" });
     if (q !== state.search.q.trim()) return;
     state.search.results = d.results || [];
-  } catch (err) { toast("Sökningen misslyckades: " + err.message); }
+  } catch (err) { toast("Search failed: " + err.message); }
   state.search.loading = false; renderResults();
 }
 
@@ -426,26 +427,26 @@ function renderResults() {
   const items = results ?? trending;
   if (loading && !results) { box.innerHTML = `<div class="splash small"><div class="spinner"></div></div>`; return; }
   if (!items) { box.innerHTML = `<div class="splash small"><div class="spinner"></div></div>`; return; }
-  if (!items.length) { box.innerHTML = `<p class="empty">Inga träffar.</p>`; return; }
-  box.innerHTML = `${results ? "" : `<h2 class="section">Populärt den här veckan</h2>`}
+  if (!items.length) { box.innerHTML = `<p class="empty">No results.</p>`; return; }
+  box.innerHTML = `${results ? "" : `<h2 class="section">Popular this week</h2>`}
     <div class="list">${items.slice(0, 20).map((r) => {
       const have = showById(r.id);
       return `
-      <article class="card show result">
+      <article class="card show result" data-action="open" data-id="${r.id}">
         <div class="poster">${r.poster_path ? `<img loading="lazy" src="${img(r.poster_path, "w185")}" alt="">` : "📺"}</div>
         <div class="info">
           <h3>${esc(r.name)} <span class="muted year">${esc((r.first_air_date || "").slice(0, 4))}</span></h3>
           <p class="overview clamp">${esc(r.overview || "")}</p>
         </div>
         ${have
-          ? `<button class="add done" data-action="open" data-id="${r.id}" aria-label="Visa">✓</button>`
-          : `<button class="add" data-action="add" data-id="${r.id}" aria-label="Lägg till">＋</button>`}
+          ? `<button class="add done" data-action="open" data-id="${r.id}" aria-label="Show">✓</button>`
+          : `<button class="add" data-action="add" data-id="${r.id}" aria-label="Add">＋</button>`}
       </article>`;
     }).join("")}</div>
-    <p class="attribution">Seriedata från TMDB. Streaminginfo från JustWatch.</p>`;
+    <p class="attribution">Show data from TMDB. Streaming info from JustWatch.</p>`;
 }
 
-// ---------- Detaljvy ----------
+// ---------- Detail sheet ----------
 function openSheet(id) {
   state.openId = String(id);
   const show = showById(id);
@@ -455,33 +456,32 @@ function openSheet(id) {
   document.body.classList.add("noscroll");
   renderSheet();
   $("#sheet").scrollTop = 0;
-  if (show && Date.now() - (show.fetchedAt || 0) > 3 * DAY) {
+  if (show && (Date.now() - (show.fetchedAt || 0) > 3 * DAY || show.lang !== CONFIG.language)) {
     fetchShowData(id).then((d) => updateDoc(doc(db, "shows", String(id)), d)).catch(() => {});
+  }
+  // A search result that is not in the list: fetch the details just for viewing.
+  if (!show) {
+    state.preview = null;
+    fetchShowData(id)
+      .then((d) => { if (state.openId === String(id)) { state.preview = d; state.sheetSeason = null; renderSheet(); } })
+      .catch((err) => { toast("Could not load the show: " + err.message); if (state.openId === String(id)) history.back(); });
   }
 }
 function closeSheet() {
   state.openId = null;
+  state.preview = null;
   $("#sheet").hidden = true;
   $("#sheet").innerHTML = "";
   document.body.classList.remove("noscroll");
 }
 window.addEventListener("popstate", () => { if (state.openId) closeSheet(); });
 
-function renderSheet() {
-  const show = showById(state.openId);
-  const el = $("#sheet");
-  if (!show) { history.back(); return; }
-  const uid = state.user.uid;
-  const n = nextEp(show);
-  const { total, seen } = episodeCounts(show);
-  const season = seasonsOf(show).find((s) => s.n === state.sheetSeason) || seasonsOf(show)[0];
-  const prov = show.providers || {};
-  const statusText = show.tmdbStatus === "Ended" ? "Avslutad" : show.tmdbStatus === "Canceled" ? "Nedlagd" : show.tmdbStatus === "Returning Series" ? "Pågående" : show.tmdbStatus === "In Production" ? "I produktion" : "";
-
-  el.innerHTML = `
-    <div class="sheet-inner">
+function sheetHeader(show) {
+  const statusText = { Ended: "Ended", Canceled: "Cancelled", "Returning Series": "Returning", "In Production": "In production" }[show.tmdbStatus] || "";
+  const n = seasonsOf(show).length;
+  return `
       <div class="hero" style="${show.backdrop ? `background-image:url('${img(show.backdrop, "w780")}')` : ""}">
-        <button class="close" data-action="close" aria-label="Stäng">←</button>
+        <button class="close" data-action="close" aria-label="Close">←</button>
       </div>
       <div class="sheet-body">
         <div class="title-row">
@@ -489,45 +489,83 @@ function renderSheet() {
           <div>
             <h2>${esc(show.name)}</h2>
             ${show.originalName ? `<div class="muted small">${esc(show.originalName)}</div>` : ""}
-            <div class="muted small">${[show.year, statusText, seasonsOf(show).length ? `${seasonsOf(show).length} säs.` : "", show.rating ? `★ ${show.rating}` : ""].filter(Boolean).join(" · ")}</div>
+            <div class="muted small">${[show.year, statusText, n ? `${n} season${n === 1 ? "" : "s"}` : "", show.rating ? `★ ${show.rating}` : ""].filter(Boolean).join(" · ")}</div>
             <div class="muted small">${esc(show.genres?.join(", ") || "")}</div>
           </div>
-        </div>
+        </div>`;
+}
+
+function providersSection(show) {
+  const prov = show.providers || {};
+  return `
+        <section>
+          <h3>Where can we watch it?</h3>
+          ${prov.stream?.length
+            ? `<div class="providers">${prov.stream.map((p) => `<div class="prov">${p.logo ? `<img src="${img(p.logo, "w92")}" alt="">` : ""}<span>${esc(p.name)}</span></div>`).join("")}</div>`
+            : `<p class="muted">Not included in any streaming service in Sweden right now.</p>`}
+          ${prov.rent?.length ? `<p class="muted small">Rent/buy: ${prov.rent.map((p) => esc(p.name)).join(", ")}</p>` : ""}
+          ${prov.link ? `<a class="small" href="${esc(prov.link)}" target="_blank" rel="noopener">See all options ↗</a>` : ""}
+          <p class="attribution">Streaming info from JustWatch · updated ${fmtDate(show.fetchedAt)}</p>
+        </section>`;
+}
+
+// Details for a search result that is not in the list yet.
+function renderPreview(el, show) {
+  el.innerHTML = `
+    <div class="sheet-inner">
+      ${sheetHeader(show)}
+        <button class="btn primary wide" data-action="add" data-id="${show.tmdbId}">＋ Add to Want to watch</button>
+        ${show.overview ? `<p class="overview">${esc(show.overview)}</p>` : `<p class="muted">No description available.</p>`}
+        ${show.nextAir ? `<p class="muted small">Next episode (${epLabel(show.nextAir)}) airs ${fmtDate(show.nextAir.date)}.</p>` : ""}
+        ${providersSection(show)}
+      </div>
+    </div>`;
+}
+
+function renderSheet() {
+  const el = $("#sheet");
+  const listed = showById(state.openId);
+  const show = listed || (String(state.preview?.tmdbId) === state.openId ? state.preview : null);
+  if (!show) {
+    el.innerHTML = `<div class="sheet-inner"><div class="hero"><button class="close" data-action="close" aria-label="Close">←</button></div><div class="splash small"><div class="spinner"></div></div></div>`;
+    return;
+  }
+  if (!listed) return renderPreview(el, show);
+  const uid = state.user.uid;
+  const n = nextEp(show);
+  const { total, seen } = episodeCounts(show);
+  const season = seasonsOf(show).find((s) => s.n === state.sheetSeason) || seasonsOf(show)[0];
+
+  el.innerHTML = `
+    <div class="sheet-inner">
+      ${sheetHeader(show)}
 
         <div class="seg">${Object.entries(STATUS).map(([k, l]) =>
           `<button class="${show.status === k ? "on" : ""}" data-action="status" data-s="${k}">${l}</button>`).join("")}</div>
 
         ${show.overview ? `<p class="overview">${esc(show.overview)}</p>` : ""}
 
-        <section>
-          <h3>Var kan vi se den?</h3>
-          ${prov.stream?.length
-            ? `<div class="providers">${prov.stream.map((p) => `<div class="prov">${p.logo ? `<img src="${img(p.logo, "w92")}" alt="">` : ""}<span>${esc(p.name)}</span></div>`).join("")}</div>`
-            : `<p class="muted">Ingår inte i någon streamingtjänst i Sverige just nu.</p>`}
-          ${prov.rent?.length ? `<p class="muted small">Hyra/köpa: ${prov.rent.map((p) => esc(p.name)).join(", ")}</p>` : ""}
-          ${prov.link ? `<a class="small" href="${esc(prov.link)}" target="_blank" rel="noopener">Visa alla alternativ ↗</a>` : ""}
-          <p class="attribution">Streaminginfo från JustWatch · uppdaterad ${fmtDate(show.fetchedAt)}</p>
-        </section>
+        ${providersSection(show)}
 
         <section>
-          <h3>Vem vill se den?</h3>
+          <h3>Who wants to watch it?</h3>
           ${members().map((m) => {
             const v = show.interest?.[m.uid];
             const mine = m.uid === uid;
             return `<div class="vote-row">
-              <span class="who">${esc(m.name)}${mine ? " (du)" : ""}</span>
+              <span class="who">${esc(m.name)}${mine ? " (you)" : ""}</span>
               <div class="vote-btns">${INTEREST.map((i) => `<button class="${v === i.v ? "on" : ""}" ${mine ? `data-action="interest" data-v="${i.v}"` : "disabled"} title="${i.label}" aria-label="${i.label}">${thumbs(i.v)}<small>${i.label}</small></button>`).join("")}</div>
             </div>`;
           }).join("")}
-          ${isOurs(show) ? `<p class="pill good">Våra serier · ${thumbsTotal(show)} tummar upp</p>` : ""}
+          ${isOurs(show) ? `<p class="pill good">Our shows · ${thumbsTotal(show)} thumbs up</p>` : ""}
         </section>
 
         ${seasonsOf(show).length ? `
         <section>
-          <h3>Avsnitt <span class="muted small">${seen} av ${total} sedda</span></h3>
+          <h3>Episodes <span class="muted small">${seen} of ${total} watched</span></h3>
           <div class="bar big"><span style="width:${total ? Math.round((seen / total) * 100) : 0}%"></span></div>
-          ${n ? `<div class="next-row"><div><span class="muted small">Nästa avsnitt</span><b>${epLabel(n)}</b></div><button class="btn primary" data-action="advance" data-id="${show.tmdbId}">✓ Markera som sett</button></div>`
-              : `<p class="muted">${show.nextAir ? `Nästa avsnitt (${epLabel(show.nextAir)}) kommer ${fmtDate(show.nextAir.date)}.` : seen && seen === total ? "Ni har sett alla avsnitt som finns." : ""}</p>`}
+          ${n ? `<div class="next-row"><div><span class="muted small">Next episode</span><b>${epLabel(n)}</b></div><button class="btn primary" data-action="advance" data-id="${show.tmdbId}">✓ Mark as watched</button></div>`
+              : `<p class="muted">${show.nextAir ? `Next episode (${epLabel(show.nextAir)}) airs ${fmtDate(show.nextAir.date)}.` : seen && seen === total ? "You have watched every episode so far." : ""}</p>`}
           <div class="chips">${seasonsOf(show).map((s) => {
             const allSeen = isWatched(show, s.n, s.eps);
             return `<button class="chip ${s.n === season?.n ? "on" : ""}" data-action="season" data-n="${s.n}">S${s.n}${allSeen ? " ✓" : ""}</button>`;
@@ -536,19 +574,19 @@ function renderSheet() {
             const aired = isAired(show, season.n, e);
             return `<button class="ep ${isWatched(show, season.n, e) ? "seen" : ""}" ${aired ? `data-action="setEp" data-s="${season.n}" data-e="${e}"` : "disabled"}>${e}</button>`;
           }).join("")}</div>
-          <p class="muted small">Tryck på ett avsnitt för att markera allt fram till och med det som sett.</p>` : ""}
-          ${show.progress?.s ? `<button class="btn link small" data-action="resetEp">Nollställ avsnitt</button>` : ""}
+          <p class="muted small">Tap an episode to mark it and everything before it as watched.</p>` : ""}
+          ${show.progress?.s ? `<button class="btn link small" data-action="resetEp">Reset episodes</button>` : ""}
         </section>` : ""}
 
         <div class="danger-zone">
-          <button class="btn link small" data-action="refresh">↻ Uppdatera info</button>
-          <button class="btn link small red" data-action="delete">Ta bort från listan</button>
+          <button class="btn link small" data-action="refresh">↻ Refresh info</button>
+          <button class="btn link small red" data-action="delete">Remove from list</button>
         </div>
       </div>
     </div>`;
 }
 
-// ---------- Klick ----------
+// ---------- Clicks ----------
 document.addEventListener("click", async (e) => {
   const t = e.target.closest("[data-action]");
   if (!t) return;
@@ -570,7 +608,7 @@ document.addEventListener("click", async (e) => {
     case "logout": return signOut(auth);
     case "menu": {
       const ms = members().map((m) => m.name).join(" & ");
-      if (confirm(`Inloggad som ${myName()} (${state.user.email}).\nListan delas av: ${ms}\n\nVill du logga ut?`)) signOut(auth);
+      if (confirm(`Signed in as ${myName()} (${state.user.email}).\nThe list is shared by: ${ms}\n\nDo you want to sign out?`)) signOut(auth);
       return;
     }
     case "tab":
@@ -614,14 +652,14 @@ document.addEventListener("click", async (e) => {
     }
     case "resetEp": return update(id, { progress: { s: 0, e: 0 } });
     case "refresh":
-      try { await updateDoc(doc(db, "shows", String(id)), await fetchShowData(id)); toast("Uppdaterad"); } catch (err) { toast(err.message); }
+      try { await updateDoc(doc(db, "shows", String(id)), await fetchShowData(id)); toast("Updated"); } catch (err) { toast(err.message); }
       return;
     case "delete": {
       const show = showById(id);
-      if (!confirm(`Ta bort ${show.name} från listan? Det går inte att ångra.`)) return;
+      if (!confirm(`Remove ${show.name} from the list? This cannot be undone.`)) return;
       history.back();
       await deleteDoc(doc(db, "shows", String(id)));
-      return toast("Borttagen");
+      return toast("Removed");
     }
   }
 });
