@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v21";
+const APP_VERSION = "v22";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -1462,7 +1462,7 @@ async function movieClick(a, t) {
 // ---------- Movie import ----------
 // Imports a file Claude made from your Letterboxd export and spreadsheet. Each title is matched
 // against TMDB here in the browser. Running it again skips what is already imported.
-const imp = { items: null, running: false, done: 0, total: 0, added: 0, skipped: 0, notFound: [], finished: false };
+const imp = { items: null, running: false, done: 0, total: 0, added: 0, skipped: 0, notFound: [], failed: [], finished: false };
 const importKey = (t, y) => `${t.toLowerCase().replace(/[^a-z0-9]/g, "")}|${y || ""}`;
 
 function renderImport() {
@@ -1474,11 +1474,16 @@ function renderImport() {
     body = `
       <p>${imp.finished ? "Import finished." : "Importing… keep the app open."}</p>
       <div class="bar big"><span style="width:${pct}%"></span></div>
-      <p class="muted small">${imp.done} of ${imp.total} done · ${imp.added} added · ${imp.skipped} already there · ${imp.notFound.length} not found</p>
+      <p class="muted small">${imp.done} of ${imp.total} done · ${imp.added} added · ${imp.skipped} already there · ${imp.notFound.length} not found${imp.failed.length ? ` · ${imp.failed.length} failed` : ""}</p>
       ${imp.finished && imp.notFound.length ? `
         <details><summary class="small">Not found on TMDB (${imp.notFound.length})</summary>
           <p class="muted small">Search for these under Movies → Search and add them by hand.</p>
           <ul class="small">${imp.notFound.map((x) => `<li>${esc(x.t)} (${esc(x.y || "?")})</li>`).join("")}</ul>
+        </details>` : ""}
+      ${imp.finished && imp.failed.length ? `
+        <details><summary class="small">Failed (${imp.failed.length})</summary>
+          <p class="muted small">Something went wrong for these. Run the import again to retry them.</p>
+          <ul class="small">${imp.failed.map((x) => `<li>${esc(x.t)} (${esc(x.y || "?")}): ${esc(x.err)}</li>`).join("")}</ul>
         </details>` : ""}`;
   } else if (imp.items) {
     const want = imp.items.filter((i) => i.s === "want").length;
@@ -1508,14 +1513,25 @@ const yearOf = (r) => Number((r.release_date || "").slice(0, 4)) || null;
 async function findMovie(title, year) {
   const clean = title.replace(/\s*\([^)]*\)\s*$/, "").trim();
   const y = Number(year) || null;
-  if (y) {
-    const d = await tmdb("/search/movie", { query: clean, primary_release_year: y, include_adult: "false" });
-    if (d.results?.length) return d.results[0];
+  // Also try "and" <-> "&", since titles are written both ways.
+  const variants = [...new Set([clean, clean.replace(/ & /g, " and "), clean.replace(/ and /gi, " & ")])];
+  for (const q of variants) {
+    if (y) {
+      // Exact first release year, then any release (festival, other country) in that year
+      for (const param of ["primary_release_year", "year"]) {
+        const d = await tmdb("/search/movie", { query: q, [param]: y, include_adult: "false" });
+        if (d.results?.length) return d.results[0];
+      }
+    }
+    const d = await tmdb("/search/movie", { query: q, include_adult: "false" });
+    const res = d.results || [];
+    if (!y && res.length) return res[0];
+    // Closest year, up to two years off (festival year vs. release year)
+    const near = res.filter((r) => yearOf(r) && Math.abs(yearOf(r) - y) <= 2)
+      .sort((a, b) => Math.abs(yearOf(a) - y) - Math.abs(yearOf(b) - y));
+    if (near.length) return near[0];
   }
-  const d = await tmdb("/search/movie", { query: clean, include_adult: "false" });
-  const res = d.results || [];
-  if (!y) return res[0] || null;
-  return res.find((r) => yearOf(r) && Math.abs(yearOf(r) - y) <= 1) || null;
+  return null;
 }
 
 async function importOne(item, byId) {
@@ -1587,24 +1603,26 @@ async function importFromLink() {
 
 async function runImport() {
   if (imp.running || !imp.items) return;
-  Object.assign(imp, { running: true, finished: false, done: 0, added: 0, skipped: 0, notFound: [], total: imp.items.length });
+  Object.assign(imp, { running: true, finished: false, done: 0, added: 0, skipped: 0, notFound: [], failed: [], total: imp.items.length });
   const queue = [...imp.items];
   const byId = new Map();
   let last = 0;
   const worker = async () => {
     while (queue.length) {
       const item = queue.shift();
-      try { await importOne(item, byId); }
-      catch (err) {
-        // Rate limited or a network hiccup: wait and try once more.
-        await new Promise((r) => setTimeout(r, 2000));
-        try { await importOne(item, byId); } catch { imp.notFound.push(item); }
+      // Rate limits and network hiccups: wait and try again, up to three times.
+      for (let attempt = 0; ; attempt++) {
+        try { await importOne(item, byId); break; }
+        catch (err) {
+          if (attempt === 3) { imp.failed.push({ ...item, err: err.message }); break; }
+          await new Promise((r) => setTimeout(r, [2000, 5000, 10000][attempt]));
+        }
       }
       imp.done++;
       if (Date.now() - last > 400) { last = Date.now(); renderImport(); }
     }
   };
-  await Promise.all([worker(), worker(), worker(), worker()]);
+  await Promise.all([worker(), worker(), worker()]);
   imp.running = false;
   imp.finished = true;
   renderImport();
