@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v26";
+const APP_VERSION = "v27";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -1415,6 +1415,7 @@ function renderImport() {
             <label class="small"><input type="checkbox" data-keep="${i}" ${imp.keep[i] !== false ? "checked" : ""}>
               ${esc(u.item.t)} (${esc(u.item.y || "?")}) → <a href="https://www.themoviedb.org/movie/${u.loose.id}" target="_blank" rel="noopener">${esc(u.loose.title)}</a> <span class="muted">(TMDB ${yearOf(u.loose) || "?"})</span></label>`).join("")}</div>
         </details>` : ""}
+      ${p.series.length ? `<details><summary class="small"><b>Series (${p.series.length})</b>: added to your own series</summary><ul class="small">${p.series.map(li).join("")}</ul></details>` : ""}
       ${imp.notFound.length ? `<details><summary class="small">Not found on TMDB (${imp.notFound.length})</summary><ul class="small">${imp.notFound.map(li).join("")}</ul></details>` : ""}
       ${imp.failed.length ? `<details><summary class="small">Could not be checked (${imp.failed.length})</summary><p class="muted small">TMDB did not answer. Run the check again later for these.</p><ul class="small">${imp.failed.map(li).join("")}</ul></details>` : ""}
       <button class="btn primary wide" data-action="importApply">Save</button>
@@ -1465,7 +1466,9 @@ async function runImport() {
   Object.assign(imp, { phase: "checking", done: 0, total: imp.items.length, notFound: [], failed: [], keep: {} });
   renderImport();
   const ok = [], moved = [], uncertain = [];
-  await runInParallel(imp.items, async (item) => {
+  const series = imp.items.filter((i) => i.kind === "tv" && i.id);
+  imp.done = series.length;
+  await runInParallel(imp.items.filter((i) => i.kind !== "tv"), async (item) => {
     for (let attempt = 0; ; attempt++) {
       try {
         const { strict, loose } = await matchMovie(item.t, item.y, item.id);
@@ -1484,7 +1487,7 @@ async function runImport() {
   moved.sort(sortT); uncertain.sort(sortT);
   const targets = new Set([...ok, ...moved].map((m) => m.strict.id).concat(uncertain.map((u) => u.loose.id)));
   const newCount = [...targets].filter((id) => !get("movie", "mine", id)).length;
-  imp.plan = { ok, moved, uncertain, newCount };
+  imp.plan = { ok, moved, uncertain, newCount, series };
   imp.phase = "planned";
   renderImport();
 }
@@ -1521,11 +1524,29 @@ async function applyImport() {
   // Movies that a line was wrongly matched to before
   const wrong = new Set([...p.moved.map((m) => m.loose?.id), ...p.uncertain.filter((u, i) => imp.keep[i] === false).map((u) => u.loose.id)].filter(Boolean));
 
-  const jobs = [...[...wrong].map((id) => ["repair", id]), ...[...groups.keys()].map((id) => ["merge", id])];
+  const jobs = [...[...wrong].map((id) => ["repair", id]), ...[...groups.keys()].map((id) => ["merge", id]), ...p.series.map((i) => ["series", i])];
   imp.total = jobs.length; imp.done = 0; imp.applied = 0;
   renderImport();
   await runInParallel(jobs, async ([kind, id]) => {
     try {
+      if (kind === "series") {
+        // A series from the file: add it to your own series (seen ones as Finished)
+        const item = id;
+        const sid = item.id;
+        const cur = get("tv", "mine", sid);
+        const tags = [...new Set([...(cur?.tags || []), ...(item.tags || [])])];
+        if (cur) { if (tags.length !== (cur.tags || []).length) await updateDoc(ref("tv", "mine", sid), { tags }); return; }
+        const data = await fetchShowData(sid);
+        const last = [...(data.seasons || [])].reverse()[0];
+        const done = item.s === "seen";
+        await setDoc(ref("tv", "mine", sid), {
+          ...data, status: done ? "done" : "want", tags,
+          progress: done && data.lastAired ? { s: data.lastAired.s, e: data.lastAired.e } : done && last ? { s: last.n, e: last.eps } : { s: 0, e: 0 },
+          addedAt: item.added ? new Date(item.added + "T12:00:00").getTime() : Date.now(), updatedAt: Date.now(),
+        });
+        imp.applied++;
+        return;
+      }
       const doc0 = get("movie", "mine", id);
       if (kind === "repair") {
         if (!doc0?.importKey) return; // only touch movies the import created
