@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v47";
+const APP_VERSION = "v48";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -990,7 +990,7 @@ function renderWatchlist(kind) {
       ${scopeSwitch(kind, "watchlist")}
       <div id="news"></div>
       <div id="pick"></div>
-      <div class="searchbar"><input id="wlFilter" type="search" placeholder="Search your watchlist…" autocomplete="off" value="${esc(f.q)}"></div>
+      <div class="searchbar"><input id="wlFilter" type="search" placeholder="Search title, director, actor, label…" autocomplete="off" value="${esc(f.q)}"></div>
       <div id="wlControls"></div>
       <div id="wlList"></div>`;
     $("#wlFilter").oninput = (e) => { f.q = e.target.value; f.limit = 60; renderWatchlist(kind); };
@@ -1001,7 +1001,10 @@ function renderWatchlist(kind) {
   const all = myWatchlist(kind);
   let items = all;
   const q = f.q.trim().toLowerCase();
-  if (q) items = items.filter((x) => [titleOf(x), x.originalTitle, x.originalName, ...(x.directors || []), ...(x.creators || [])].filter(Boolean).join(" ").toLowerCase().includes(q));
+  // Search in titles, directors, creators, cast, labels and genres
+  const haystack = (x) => [titleOf(x), x.originalTitle, x.originalName, ...(x.directors || []), ...(x.creators || []),
+    ...(x.cast || []).map((c) => c.name), ...(x.tags || []), ...(x.genres || [])].filter(Boolean).join(" · ").toLowerCase();
+  if (q) items = items.filter((x) => haystack(x).includes(q));
   else items = items.filter((x) => interestOk(x, f.interest || "yes")); // searching finds everything, also hidden ones
   const hiddenCount = q ? 0 : all.length - all.filter((x) => interestOk(x, f.interest || "yes")).length;
   if (f.onServices && svc) items = items.filter((x) => onServices(x, svc));
