@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v25";
+const APP_VERSION = "v26";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -59,7 +59,7 @@ if ("serviceWorker" in navigator) {
     if (!hadController || reloading) return;
     reloading = true;
     // Never reload in the middle of a movie import; reload when it has finished instead.
-    const reloadWhenIdle = () => (typeof imp !== "undefined" && (imp.phase === "checking" || imp.phase === "applying") ? setTimeout(reloadWhenIdle, 3000) : location.reload());
+    const reloadWhenIdle = () => (typeof imp !== "undefined" && ["checking", "planned", "applying"].includes(imp.phase) ? setTimeout(reloadWhenIdle, 3000) : location.reload());
     reloadWhenIdle();
   });
   navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((reg) => {
@@ -272,7 +272,10 @@ function timeLeft(show) {
 }
 
 async function fetchMovieData(id) {
-  const d = await tmdb(`/movie/${id}`, { append_to_response: "watch/providers,credits,videos" });
+  const d = await tmdb(`/movie/${id}`, { append_to_response: "watch/providers,credits,videos,release_dates" });
+  // The year a movie was first shown anywhere (festival premiere included), as Letterboxd and IMDb show it.
+  // TMDB's own release date is often the later cinema release in the home country.
+  const firstShown = (d.release_dates?.results || []).flatMap((c) => c.release_dates || []).map((r) => r.release_date).filter(Boolean).sort()[0];
   let overview = d.overview;
   if (!overview) {
     try { overview = (await tmdb(`/movie/${id}`, { language: "en-US" })).overview; } catch {}
@@ -287,8 +290,9 @@ async function fetchMovieData(id) {
     poster: d.poster_path || null,
     backdrop: d.backdrop_path || null,
     overview: overview || "",
-    year: (d.release_date || "").slice(0, 4),
+    year: (firstShown || d.release_date || "").slice(0, 4),
     releaseDate: d.release_date || null,
+    firstShown: firstShown ? firstShown.slice(0, 10) : null,
     runtime: d.runtime || null,
     genres: (d.genres || []).map((g) => g.name),
     rating: d.vote_average ? Math.round(d.vote_average * 10) / 10 : null,
@@ -313,7 +317,7 @@ async function fetchMovieData(id) {
 // ---------- Series and movies: the same model ----------
 // Every series and movie lives in "My stuff" (private: users/{uid}/shows and users/{uid}/movies)
 // and/or "Our stuff" (shared: shows and sharedMovies), where you vote with thumbs.
-const MOVIE_DATA_V = 1;
+const MOVIE_DATA_V = 2; // 2: year = first time shown anywhere
 const K = {
   tv: {
     mine: (uid) => ["users", uid, "shows"], ours: ["shows"], fetch: (id) => fetchShowData(id), path: "tv",
@@ -329,7 +333,9 @@ const K = {
 };
 const KINDS = ["tv", "movie"];
 const titleOf = (x) => x.name || x.title || "";
-const PERSONAL_FIELDS = ["status", "addedAt", "seenAt", "myRating", "review", "suggested", "importKey", "tags", "where", "note", "progress", "updatedAt"];
+// The year to show: the one from your Letterboxd export if there is one, else the first time it was shown.
+const yearShown = (x) => x.lbYear || x.year || "";
+const PERSONAL_FIELDS = ["status", "addedAt", "seenAt", "myRating", "review", "lbYear", "suggested", "importKey", "tags", "where", "note", "progress", "updatedAt"];
 const SHARED_FIELDS = ["interest", "suggestedBy", "suggestedAt", "addedBy", "addedFor"];
 // Only the TMDB data of an item, without anyone's personal or shared fields.
 const baseData = (x) => Object.fromEntries(Object.entries(x).filter(([k]) => !PERSONAL_FIELDS.includes(k) && !SHARED_FIELDS.includes(k)));
@@ -725,7 +731,7 @@ function card(kind, x, scope, { skip = false, label = null } = {}) {
     <article class="card show" data-action="open" data-kind="${kind}" data-id="${id}">
       <div class="poster">${x.poster ? `<img loading="lazy" src="${img(x.poster, "w185")}" alt="">` : K[kind].emoji}</div>
       <div class="info">
-        <h3>${esc(titleOf(x))} <span class="muted year">${esc(x.year)}</span></h3>
+        <h3>${esc(titleOf(x))} <span class="muted year">${esc(yearShown(x))}</span></h3>
         ${meta ? `<div class="muted small">${esc(meta)}</div>` : ""}
         ${pills.join("")}
         ${extra}
@@ -1010,7 +1016,7 @@ function renderSheet() {
   const el = $("#sheet");
   if (!state.open) return;
   // Do not redraw while you are typing a comment (the text would be lost)
-  if (document.activeElement?.id === "reviewText") return;
+  if (["reviewText", "whereText"].includes(document.activeElement?.id)) return;
   const { kind, id } = state.open;
   const mine = get(kind, "mine", id), ours = get(kind, "ours", id);
   const scope = activeScope(kind, id);
@@ -1027,7 +1033,7 @@ function renderSheet() {
   const statusText = { Ended: "Ended", Canceled: "Cancelled", "Returning Series": "Returning", "In Production": "In production" }[x.tmdbStatus] || "";
   const nSeasons = seasonsOf(x).length;
   const meta = kind === "movie"
-    ? [x.year, x.runtime && fmtDuration(x.runtime), x.rating && `★ ${x.rating}`]
+    ? [yearShown(mine || x), x.runtime && fmtDuration(x.runtime), x.rating && `★ ${x.rating}`]
     : [x.year, statusText, nSeasons ? `${nSeasons} season${nSeasons === 1 ? "" : "s"}` : "", x.rating && `★ ${x.rating}`];
 
   // My stuff
@@ -1047,8 +1053,12 @@ function renderSheet() {
         <h3>${mine.seenAt ? `You saw it ${fmtSeen(mine.seenAt)}` : "You have seen it"} <button class="btn link small" data-action="unseen">Not seen</button></h3>
         ${movieStars(mine.myRating || 0)}
         <p class="muted small">Tap a star to rate. Tap it again for half a star.</p>
+        <label class="field-label" for="whereText">Where did you watch it?</label>
+        <input id="whereText" list="wherePlaces" value="${esc(mine.where || "")}" placeholder="For example Bio, Roy or Netflix" autocomplete="off">
+        <datalist id="wherePlaces">${[...new Set(list("movie", "mine").map((m) => m.where).filter(Boolean))].sort().map((w) => `<option value="${esc(w)}">`).join("")}</datalist>
+        <label class="field-label" for="reviewText">Comment</label>
         <textarea id="reviewText" rows="${mine.review ? Math.min(10, 3 + Math.floor(mine.review.length / 60)) : 3}" placeholder="Write a comment…">${esc(mine.review || "")}</textarea>
-        <button class="btn small" data-action="saveReview">Save comment</button>
+        <button class="btn small" data-action="saveReview">Save</button>
         ${together
           ? `<p class="small">👥 Watched together with ${esc(others || "someone")}. <button class="btn link small" data-action="togetherUnseen">Undo</button></p>`
           : `<button class="btn wide" data-action="seenTogether">👥 We watched it together</button>`}
@@ -1102,8 +1112,8 @@ function renderSheet() {
     x.networks?.length && `<div><span class="muted">Network</span> ${esc(x.networks.join(", "))}</div>`,
     (x.originalTitle || x.originalName) && `<div><span class="muted">Original title</span> ${esc(x.originalTitle || x.originalName)}</div>`,
     kind === "tv" && totalText(x) && `<div><span class="muted">Length</span> ${totalText(x)}${x.nextAir ? " so far" : ""}</div>`,
-    kind === "movie" && x.releaseDate && `<div><span class="muted">Released</span> ${new Date(x.releaseDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</div>`,
-    mine?.where && `<div><span class="muted">Watched at</span> ${esc(mine.where)}</div>`,
+    kind === "movie" && (x.firstShown || x.releaseDate) && `<div><span class="muted">First shown</span> ${new Date(x.firstShown || x.releaseDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</div>`,
+    mine?.where && mine.status !== "seen" && `<div><span class="muted">Watched at</span> ${esc(mine.where)}</div>`,
     mine?.note && `<div><span class="muted">Note</span> ${esc(mine.note)}</div>`,
     mine?.tags?.length && `<div><span class="muted">Lists</span> ${esc(mine.tags.join(", "))}</div>`,
   ].filter(Boolean).join("");
@@ -1346,7 +1356,12 @@ const nearYear = (r, y, d) => !y || (yearOf(r) && Math.abs(yearOf(r) - y) <= d);
 // Looks a title up. "strict" is a result with exactly the same title (and about the same year).
 // "loose" is what the first version of the import picked (the first search result), used to find
 // movies that were matched wrongly before.
-async function matchMovie(title, year) {
+async function matchMovie(title, year, id) {
+  if (id) {
+    const d = await tmdb(`/movie/${id}`);
+    const hit = { id: d.id, title: d.title, original_title: d.original_title, release_date: d.release_date, poster_path: d.poster_path, backdrop_path: d.backdrop_path, overview: d.overview, vote_average: d.vote_average };
+    return { strict: hit, loose: hit };
+  }
   const clean = title.replace(/\s*\([^)]*\)\s*$/, "").trim();
   const y = Number(year) || null;
   let loose = null, strict = null;
@@ -1391,14 +1406,14 @@ function renderImport() {
       </ul>
       ${p.moved.length ? `
         <details open><summary class="small"><b>Corrections (${p.moved.length})</b>: matched to the wrong movie before</summary>
-          <ul class="small">${p.moved.map((m) => `<li>${esc(m.item.t)} (${esc(m.item.y || "?")}): was <i>${esc(m.loose.title)} (${yearOf(m.loose) || "?"})</i>, now <b>${esc(m.strict.title)} (${yearOf(m.strict) || "?"})</b></li>`).join("")}</ul>
+          <ul class="small">${p.moved.map((m) => `<li>${esc(m.item.t)} (${esc(m.item.y || "?")}): was <a href="https://www.themoviedb.org/movie/${m.loose.id}" target="_blank" rel="noopener"><i>${esc(m.loose.title)}</i></a>, now <a href="https://www.themoviedb.org/movie/${m.strict.id}" target="_blank" rel="noopener"><b>${esc(m.strict.title)}</b></a></li>`).join("")}</ul>
         </details>` : ""}
       ${p.uncertain.length ? `
         <details open><summary class="small"><b>Please check (${p.uncertain.length})</b>: no movie with exactly this title</summary>
           <p class="muted small">Untick the ones that are wrong. They are then left out, and a wrong movie from before is removed.</p>
           <div class="checklist">${p.uncertain.map((u, i) => `
             <label class="small"><input type="checkbox" data-keep="${i}" ${imp.keep[i] !== false ? "checked" : ""}>
-              ${esc(u.item.t)} (${esc(u.item.y || "?")}) → <a href="https://www.themoviedb.org/movie/${u.loose.id}" target="_blank" rel="noopener">${esc(u.loose.title)} (${yearOf(u.loose) || "?"})</a></label>`).join("")}</div>
+              ${esc(u.item.t)} (${esc(u.item.y || "?")}) → <a href="https://www.themoviedb.org/movie/${u.loose.id}" target="_blank" rel="noopener">${esc(u.loose.title)}</a> <span class="muted">(TMDB ${yearOf(u.loose) || "?"})</span></label>`).join("")}</div>
         </details>` : ""}
       ${imp.notFound.length ? `<details><summary class="small">Not found on TMDB (${imp.notFound.length})</summary><ul class="small">${imp.notFound.map(li).join("")}</ul></details>` : ""}
       ${imp.failed.length ? `<details><summary class="small">Could not be checked (${imp.failed.length})</summary><p class="muted small">TMDB did not answer. Run the check again later for these.</p><ul class="small">${imp.failed.map(li).join("")}</ul></details>` : ""}
@@ -1453,7 +1468,7 @@ async function runImport() {
   await runInParallel(imp.items, async (item) => {
     for (let attempt = 0; ; attempt++) {
       try {
-        const { strict, loose } = await matchMovie(item.t, item.y);
+        const { strict, loose } = await matchMovie(item.t, item.y, item.id);
         if (strict && (!loose || loose.id === strict.id)) ok.push({ item, strict, loose });
         else if (strict) moved.push({ item, strict, loose });
         else if (loose) uncertain.push({ item, loose });
@@ -1489,6 +1504,7 @@ function fromItems(items) {
     tags: [...new Set(items.flatMap((i) => i.tags || []))].filter((t) => !REMOVED_TAGS.includes(t)),
     addedAt: items.map((i) => day(i.added)).filter(Boolean).sort((a, b) => a - b)[0] || Date.now(),
     importKey: importKey(items[0].t, items[0].y),
+    lbYear: items.map((i) => i.y).find(Boolean) || null,
   };
 }
 
@@ -1517,7 +1533,7 @@ async function applyImport() {
           // Other lines really are this movie: rebuild it from them only
           const f = fromItems(groups.get(id).items);
           await updateDoc(ref("movie", "mine", id), {
-            status: f.status, seenAt: f.seenAt, myRating: f.myRating, where: f.where, note: f.note, tags: f.tags,
+            status: f.status, seenAt: f.seenAt, myRating: f.myRating, where: f.where, note: f.note, tags: f.tags, lbYear: f.lbYear,
           });
         } else {
           await deleteDoc(ref("movie", "mine", id));
@@ -1537,6 +1553,7 @@ async function applyImport() {
         if (f.where && !doc0.where) patch.where = f.where;
         if (f.note && !doc0.note) patch.note = f.note;
         if (f.status === "seen" && doc0.status !== "seen") { patch.status = "seen"; patch.seenAt = f.seenAt; }
+        if (f.lbYear && doc0.lbYear !== f.lbYear) patch.lbYear = f.lbYear;
         if (f.seenAt && !doc0.seenAt && doc0.status === "seen") patch.seenAt = f.seenAt;
         if (Object.keys(patch).length) { await updateDoc(ref("movie", "mine", id), patch); imp.applied++; }
         return;
@@ -1678,8 +1695,9 @@ document.addEventListener("click", async (e) => {
     case "importReset": Object.assign(imp, { items: null, phase: "idle", plan: null }); return renderImport();
     case "saveReview": {
       const text = $("#reviewText")?.value.trim() || "";
-      await save("movie", "mine", id, { review: text || deleteField() });
-      return toast(text ? "Comment saved" : "Comment removed");
+      const where = $("#whereText")?.value.trim() || "";
+      await save("movie", "mine", id, { review: text || deleteField(), where: where || deleteField() });
+      return toast("Saved");
     }
     case "renameTag": {
       const from = t.dataset.k;

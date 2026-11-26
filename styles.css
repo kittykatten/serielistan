@@ -237,3 +237,4 @@ ul.plan { padding-left: 18px; }
 .ctl-label { font-size: 12px; color: var(--muted); width: 44px; text-transform: uppercase; letter-spacing: 0.04em; }
 select { font: inherit; font-size: 13px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 99px; padding: 7px 12px; max-width: 220px; }
 select.on { background: var(--text); color: var(--bg); }
+.field-label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
