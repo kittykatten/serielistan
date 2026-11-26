@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v23";
+const APP_VERSION = "v24";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -59,7 +59,7 @@ if ("serviceWorker" in navigator) {
     if (!hadController || reloading) return;
     reloading = true;
     // Never reload in the middle of a movie import; reload when it has finished instead.
-    const reloadWhenIdle = () => (typeof imp !== "undefined" && imp.running ? setTimeout(reloadWhenIdle, 3000) : location.reload());
+    const reloadWhenIdle = () => (typeof imp !== "undefined" && (imp.phase === "checking" || imp.phase === "applying") ? setTimeout(reloadWhenIdle, 3000) : location.reload());
     reloadWhenIdle();
   });
   navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((reg) => {
@@ -329,7 +329,7 @@ const K = {
 };
 const KINDS = ["tv", "movie"];
 const titleOf = (x) => x.name || x.title || "";
-const PERSONAL_FIELDS = ["status", "addedAt", "seenAt", "myRating", "suggested", "importKey", "tags", "where", "note", "progress", "updatedAt"];
+const PERSONAL_FIELDS = ["status", "addedAt", "seenAt", "myRating", "review", "suggested", "importKey", "tags", "where", "note", "progress", "updatedAt"];
 const SHARED_FIELDS = ["interest", "suggestedBy", "suggestedAt", "addedBy", "addedFor"];
 // Only the TMDB data of an item, without anyone's personal or shared fields.
 const baseData = (x) => Object.fromEntries(Object.entries(x).filter(([k]) => !PERSONAL_FIELDS.includes(k) && !SHARED_FIELDS.includes(k)));
@@ -997,6 +997,8 @@ const STATUS_BTNS = { tv: [["want", "Watchlist"], ["watching", "Watching"], ["do
 function renderSheet() {
   const el = $("#sheet");
   if (!state.open) return;
+  // Do not redraw while you are typing a comment (the text would be lost)
+  if (document.activeElement?.id === "reviewText") return;
   const { kind, id } = state.open;
   const mine = get(kind, "mine", id), ours = get(kind, "ours", id);
   const scope = activeScope(kind, id);
@@ -1033,6 +1035,8 @@ function renderSheet() {
         <h3>${mine.seenAt ? `You saw it ${fmtSeen(mine.seenAt)}` : "You have seen it"} <button class="btn link small" data-action="unseen">Not seen</button></h3>
         ${movieStars(mine.myRating || 0)}
         <p class="muted small">Tap a star to rate. Tap it again for half a star.</p>
+        <textarea id="reviewText" rows="${mine.review ? Math.min(10, 3 + Math.floor(mine.review.length / 60)) : 3}" placeholder="Write a comment…">${esc(mine.review || "")}</textarea>
+        <button class="btn small" data-action="saveReview">Save comment</button>
         ${together
           ? `<p class="small">👥 Watched together with ${esc(others || "someone")}. <button class="btn link small" data-action="togetherUnseen">Undo</button></p>`
           : `<button class="btn wide" data-action="seenTogether">👥 We watched it together</button>`}
@@ -1316,43 +1320,93 @@ function renderSettings() {
 }
 
 // ---------- Movie import ----------
-// Imports a file Claude made from your Letterboxd export and spreadsheet. Each title is matched
-// against TMDB here in the browser. Running it again skips what is already imported.
-const imp = { items: null, running: false, done: 0, total: 0, added: 0, skipped: 0, notFound: [], failed: [], finished: false };
+// Imports a file Claude made from your Letterboxd export and spreadsheet. It works in two steps:
+// 1. Check: every title is looked up on TMDB. Only an exact title match counts as certain.
+//    The result is a plan you can look through: corrections, uncertain matches, not found.
+// 2. Apply: the plan is saved. Things you changed in the app are kept; the file only adds.
+const imp = { items: null, phase: "idle", done: 0, total: 0, plan: null, keep: {}, notFound: [], failed: [], applied: 0 };
 const importKey = (t, y) => `${t.toLowerCase().replace(/[^a-z0-9]/g, "")}|${y || ""}`;
+const yearOf = (r) => Number((r.release_date || "").slice(0, 4)) || null;
+const normTitle = (s) => (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/&/g, "and").replace(/[^a-z0-9]/g, "");
+const sameTitle = (r, title) => { const n = normTitle(title); return !!n && (normTitle(r.title) === n || normTitle(r.original_title) === n); };
+const nearYear = (r, y, d) => !y || (yearOf(r) && Math.abs(yearOf(r) - y) <= d);
+
+// Looks a title up. "strict" is a result with exactly the same title (and about the same year).
+// "loose" is what the first version of the import picked (the first search result), used to find
+// movies that were matched wrongly before.
+async function matchMovie(title, year) {
+  const clean = title.replace(/\s*\([^)]*\)\s*$/, "").trim();
+  const y = Number(year) || null;
+  let loose = null, strict = null;
+  const look = (results, d) => strict || (strict = results.find((r) => sameTitle(r, clean) && nearYear(r, y, d)) || null);
+  if (y) {
+    const d = await tmdb("/search/movie", { query: clean, primary_release_year: y, include_adult: "false" });
+    loose = d.results?.[0] || null;
+    look(d.results || [], 0);
+  }
+  if (!strict) {
+    const d = await tmdb("/search/movie", { query: clean, include_adult: "false" });
+    const res = d.results || [];
+    if (!loose) loose = y ? res.find((r) => nearYear(r, y, 1)) || null : res[0] || null;
+    look(res, 1);
+    if (!strict && y) {
+      const d2 = await tmdb("/search/movie", { query: clean, year: y, include_adult: "false" });
+      look(d2.results || [], 1);
+    }
+    if (!strict) look(res, 2);
+  }
+  return { strict, loose };
+}
 
 function renderImport() {
   const box = $("#importBox");
   if (!box) return;
+  const pct = imp.total ? Math.round((imp.done / imp.total) * 100) : 0;
+  const li = (x) => `<li>${esc(x.t)} (${esc(x.y || "?")})</li>`;
   let body;
-  if (imp.running || imp.finished) {
-    const pct = imp.total ? Math.round((imp.done / imp.total) * 100) : 0;
+  if (imp.phase === "checking" || imp.phase === "applying") {
     body = `
-      <p>${imp.finished ? "Import finished." : "Importing… keep the app open."}</p>
+      <p>${imp.phase === "checking" ? "Checking every title on TMDB… nothing is saved yet." : "Saving…"} Keep the app open.</p>
       <div class="bar big"><span style="width:${pct}%"></span></div>
-      <p class="muted small">${imp.done} of ${imp.total} done · ${imp.added} added · ${imp.skipped} already there · ${imp.notFound.length} not found${imp.failed.length ? ` · ${imp.failed.length} failed` : ""}</p>
-      ${imp.finished && imp.notFound.length ? `
-        <details><summary class="small">Not found on TMDB (${imp.notFound.length})</summary>
-          <p class="muted small">Search for these under Movies → Search and add them by hand.</p>
-          <ul class="small">${imp.notFound.map((x) => `<li>${esc(x.t)} (${esc(x.y || "?")})</li>`).join("")}</ul>
+      <p class="muted small">${imp.done} of ${imp.total}</p>`;
+  } else if (imp.phase === "planned") {
+    const p = imp.plan;
+    body = `
+      <p><b>Check finished.</b> Nothing has been saved yet. Look through the lists, then tap <b>Save</b>.</p>
+      <ul class="small plan">
+        <li>${p.ok.length} movies matched exactly</li>
+        <li>${p.newCount} will be added, ${p.ok.length + p.moved.length + p.uncertain.length - p.newCount} are already in your lists (only new info is added: reviews, labels and so on)</li>
+      </ul>
+      ${p.moved.length ? `
+        <details open><summary class="small"><b>Corrections (${p.moved.length})</b>: matched to the wrong movie before</summary>
+          <ul class="small">${p.moved.map((m) => `<li>${esc(m.item.t)} (${esc(m.item.y || "?")}): was <i>${esc(m.loose.title)} (${yearOf(m.loose) || "?"})</i>, now <b>${esc(m.strict.title)} (${yearOf(m.strict) || "?"})</b></li>`).join("")}</ul>
         </details>` : ""}
-      ${imp.finished && imp.failed.length ? `
-        <details><summary class="small">Failed (${imp.failed.length})</summary>
-          <p class="muted small">Something went wrong for these. Run the import again to retry them.</p>
-          <ul class="small">${imp.failed.map((x) => `<li>${esc(x.t)} (${esc(x.y || "?")}): ${esc(x.err)}</li>`).join("")}</ul>
-        </details>` : ""}`;
+      ${p.uncertain.length ? `
+        <details open><summary class="small"><b>Please check (${p.uncertain.length})</b>: no movie with exactly this title</summary>
+          <p class="muted small">Untick the ones that are wrong. They are then left out, and a wrong movie from before is removed.</p>
+          <div class="checklist">${p.uncertain.map((u, i) => `
+            <label class="small"><input type="checkbox" data-keep="${i}" ${imp.keep[i] !== false ? "checked" : ""}>
+              ${esc(u.item.t)} (${esc(u.item.y || "?")}) → <a href="https://www.themoviedb.org/movie/${u.loose.id}" target="_blank" rel="noopener">${esc(u.loose.title)} (${yearOf(u.loose) || "?"})</a></label>`).join("")}</div>
+        </details>` : ""}
+      ${imp.notFound.length ? `<details><summary class="small">Not found on TMDB (${imp.notFound.length})</summary><ul class="small">${imp.notFound.map(li).join("")}</ul></details>` : ""}
+      ${imp.failed.length ? `<details><summary class="small">Could not be checked (${imp.failed.length})</summary><p class="muted small">TMDB did not answer. Run the check again later for these.</p><ul class="small">${imp.failed.map(li).join("")}</ul></details>` : ""}
+      <button class="btn primary wide" data-action="importApply">Save</button>
+      <button class="btn link small" data-action="importReset">Cancel</button>`;
+  } else if (imp.phase === "applied") {
+    body = `<p><b>Done.</b> ${imp.applied} movies updated or added.</p><button class="btn link small" data-action="importReset">Import another file</button>`;
   } else if (imp.items) {
     const want = imp.items.filter((i) => i.s === "want").length;
     body = `
       <p>The file has <b>${want}</b> movies to watch and <b>${imp.items.length - want}</b> seen movies.</p>
-      <button class="btn primary wide" data-action="importStart">Start import</button>
-      <p class="muted small">Takes a few minutes. Keep the app open until it says finished.</p>`;
+      <button class="btn primary wide" data-action="importStart">Check the file</button>
+      <p class="muted small">First every title is checked against TMDB (a few minutes, keep the app open). You then see what will change before anything is saved.</p>`;
   } else {
     body = `
-      <p class="muted small">Choose the import file Claude made from your Letterboxd export and spreadsheet.</p>
+      <p class="muted small">Choose an import file that Claude made from your Letterboxd export and spreadsheet.</p>
       <label class="btn wide filebtn">Choose file…<input id="importFile" type="file" accept=".json,application/json" hidden></label>`;
   }
   box.innerHTML = `<h3>Import movies</h3>${body}`;
+  box.querySelectorAll("[data-keep]").forEach((cb) => (cb.onchange = () => { imp.keep[cb.dataset.keep] = cb.checked; }));
   const input = $("#importFile");
   if (input) input.onchange = async (e) => {
     try {
@@ -1364,78 +1418,141 @@ function renderImport() {
   };
 }
 
-const yearOf = (r) => Number((r.release_date || "").slice(0, 4)) || null;
-// Find the TMDB movie for a title and year. Tries the exact year first, then a year off by one.
-async function findMovie(title, year) {
-  const clean = title.replace(/\s*\([^)]*\)\s*$/, "").trim();
-  const y = Number(year) || null;
-  // Also try "and" <-> "&", since titles are written both ways.
-  const variants = [...new Set([clean, clean.replace(/ & /g, " and "), clean.replace(/ and /gi, " & ")])];
-  for (const q of variants) {
-    if (y) {
-      // Exact first release year, then any release (festival, other country) in that year
-      for (const param of ["primary_release_year", "year"]) {
-        const d = await tmdb("/search/movie", { query: q, [param]: y, include_adult: "false" });
-        if (d.results?.length) return d.results[0];
-      }
+async function runInParallel(items, fn, n = 3) {
+  const queue = [...items];
+  let last = 0;
+  const worker = async () => {
+    while (queue.length) {
+      const item = queue.shift();
+      await fn(item);
+      imp.done++;
+      if (Date.now() - last > 400) { last = Date.now(); renderImport(); }
     }
-    const d = await tmdb("/search/movie", { query: q, include_adult: "false" });
-    const res = d.results || [];
-    if (!y && res.length) return res[0];
-    // Closest year, up to two years off (festival year vs. release year)
-    const near = res.filter((r) => yearOf(r) && Math.abs(yearOf(r) - y) <= 2)
-      .sort((a, b) => Math.abs(yearOf(a) - y) - Math.abs(yearOf(b) - y));
-    if (near.length) return near[0];
-  }
-  return null;
+  };
+  await Promise.all(Array.from({ length: n }, worker));
 }
 
-async function importOne(item, byId) {
-  const key = importKey(item.t, item.y);
-  if (list("movie", "mine").some((m) => m.importKey === key)) { imp.skipped++; return; }
-  const hit = await findMovie(item.t, item.y);
-  if (!hit) { imp.notFound.push(item); return; }
-  const id = hit.id;
+// Step 1: look everything up and make a plan
+async function runImport() {
+  if (!imp.items || imp.phase === "checking") return;
+  Object.assign(imp, { phase: "checking", done: 0, total: imp.items.length, notFound: [], failed: [], keep: {} });
+  renderImport();
+  const ok = [], moved = [], uncertain = [];
+  await runInParallel(imp.items, async (item) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { strict, loose } = await matchMovie(item.t, item.y);
+        if (strict && (!loose || loose.id === strict.id)) ok.push({ item, strict, loose });
+        else if (strict) moved.push({ item, strict, loose });
+        else if (loose) uncertain.push({ item, loose });
+        else imp.notFound.push(item);
+        return;
+      } catch (err) {
+        if (attempt === 3) { imp.failed.push(item); return; }
+        await new Promise((r) => setTimeout(r, [2000, 5000, 10000][attempt]));
+      }
+    }
+  });
+  const sortT = (a, b) => a.item.t.localeCompare(b.item.t);
+  moved.sort(sortT); uncertain.sort(sortT);
+  const targets = new Set([...ok, ...moved].map((m) => m.strict.id).concat(uncertain.map((u) => u.loose.id)));
+  const newCount = [...targets].filter((id) => !get("movie", "mine", id)).length;
+  imp.plan = { ok, moved, uncertain, newCount };
+  imp.phase = "planned";
+  renderImport();
+}
+
+// What the file says about a movie, from all the lines that point to it
+function fromItems(items) {
+  const seen = items.filter((i) => i.s === "seen");
   const day = (d) => (d ? new Date(d + "T12:00:00").getTime() : null);
-  const personal = {
-    status: item.s,
-    addedAt: day(item.added) || Date.now(),
-    importKey: key,
-    ...(item.s === "seen" ? { seenAt: day(item.seen) } : {}),
-    ...(item.r ? { myRating: item.r } : {}),
-    ...(item.where ? { where: item.where } : {}),
-    ...(item.note ? { note: item.note } : {}),
-    tags: item.tags || [],
+  const pick = (k) => seen.map((i) => i[k]).find((v) => v != null) ?? items.map((i) => i[k]).find((v) => v != null) ?? null;
+  return {
+    status: seen.length ? "seen" : "want",
+    seenAt: seen.map((i) => day(i.seen)).filter(Boolean).sort((a, b) => b - a)[0] || null,
+    myRating: pick("r"),
+    where: pick("where"),
+    note: pick("note"),
+    review: pick("rv"),
+    tags: [...new Set(items.flatMap((i) => i.tags || []))].filter((t) => !REMOVED_TAGS.includes(t)),
+    addedAt: items.map((i) => day(i.added)).filter(Boolean).sort((a, b) => a - b)[0] || Date.now(),
+    importKey: importKey(items[0].t, items[0].y),
   };
-  // The same movie can appear twice (e.g. on a list and as seen): merge, and seen wins.
-  const prev = byId.get(id) || myMovie(id);
-  if (prev) {
-    const merged = {
-      ...personal,
-      status: prev.status === "seen" || item.s === "seen" ? "seen" : "want",
-      seenAt: prev.seenAt || personal.seenAt || null,
-      myRating: prev.myRating || personal.myRating || null,
-      tags: [...new Set([...(prev.tags || []), ...personal.tags])],
-      addedAt: Math.min(prev.addedAt || Infinity, personal.addedAt),
-    };
-    byId.set(id, { ...prev, ...merged });
-    await updateDoc(myMovieRef(id), merged);
-    imp.skipped++;
-    return;
-  }
-  let data;
-  if (item.s === "want") data = await fetchMovieData(id); // full details: runtime, services, cast
-  else data = { // seen movies only need the basics; details are fetched when you open one
-    tmdbId: id, title: hit.title || item.t, originalTitle: hit.original_title && hit.original_title !== hit.title ? hit.original_title : null,
-    poster: hit.poster_path || null, backdrop: hit.backdrop_path || null, overview: hit.overview || "",
-    year: (hit.release_date || "").slice(0, 4), releaseDate: hit.release_date || null,
-    rating: hit.vote_average ? Math.round(hit.vote_average * 10) / 10 : null,
-    lang: CONFIG.language, dataV: 0, fetchedAt: 0,
-  };
-  const doc_ = { ...data, ...personal };
-  byId.set(id, doc_);
-  await setDoc(myMovieRef(id), doc_);
-  imp.added++;
+}
+
+// Step 2: save the plan
+async function applyImport() {
+  const p = imp.plan;
+  if (!p || imp.phase !== "planned") return;
+  imp.phase = "applying";
+  // Which file lines point to which movie, after your choices
+  const groups = new Map(); // tmdbId -> { hit, items[] }
+  const add = (hit, item) => { const g = groups.get(hit.id) || { hit, items: [] }; g.items.push(item); groups.set(hit.id, g); };
+  for (const m of [...p.ok, ...p.moved]) add(m.strict, m.item);
+  p.uncertain.forEach((u, i) => { if (imp.keep[i] !== false) add(u.loose, u.item); });
+  // Movies that a line was wrongly matched to before
+  const wrong = new Set([...p.moved.map((m) => m.loose?.id), ...p.uncertain.filter((u, i) => imp.keep[i] === false).map((u) => u.loose.id)].filter(Boolean));
+
+  const jobs = [...[...wrong].map((id) => ["repair", id]), ...[...groups.keys()].map((id) => ["merge", id])];
+  imp.total = jobs.length; imp.done = 0; imp.applied = 0;
+  renderImport();
+  await runInParallel(jobs, async ([kind, id]) => {
+    try {
+      const doc0 = get("movie", "mine", id);
+      if (kind === "repair") {
+        if (!doc0?.importKey) return; // only touch movies the import created
+        if (groups.has(id)) {
+          // Other lines really are this movie: rebuild it from them only
+          const f = fromItems(groups.get(id).items);
+          await updateDoc(ref("movie", "mine", id), {
+            status: f.status, seenAt: f.seenAt, myRating: f.myRating, where: f.where, note: f.note, tags: f.tags,
+          });
+        } else {
+          await deleteDoc(ref("movie", "mine", id));
+        }
+        imp.applied++;
+        return;
+      }
+      const { hit, items } = groups.get(id);
+      const f = fromItems(items);
+      if (doc0 && !wrong.has(id)) {
+        // Already there: only add what is missing, never overwrite what you changed in the app
+        const patch = {};
+        const tags = [...new Set([...(doc0.tags || []), ...f.tags])].filter((t) => !REMOVED_TAGS.includes(t));
+        if (tags.length !== (doc0.tags || []).length) patch.tags = tags;
+        if (f.review && !doc0.review) patch.review = f.review;
+        if (f.myRating && !doc0.myRating) patch.myRating = f.myRating;
+        if (f.where && !doc0.where) patch.where = f.where;
+        if (f.note && !doc0.note) patch.note = f.note;
+        if (f.status === "seen" && doc0.status !== "seen") { patch.status = "seen"; patch.seenAt = f.seenAt; }
+        if (f.seenAt && !doc0.seenAt && doc0.status === "seen") patch.seenAt = f.seenAt;
+        if (Object.keys(patch).length) { await updateDoc(ref("movie", "mine", id), patch); imp.applied++; }
+        return;
+      }
+      if (doc0) {
+        // Repaired above; add the review, which a repair does not set
+        if (f.review && !doc0.review) await updateDoc(ref("movie", "mine", id), { review: f.review });
+        return;
+      }
+      let data;
+      if (f.status === "want") data = await fetchMovieData(id); // full details: runtime, services, cast
+      else data = { // seen movies only need the basics; details are fetched when you open one
+        tmdbId: id, title: hit.title, originalTitle: hit.original_title && hit.original_title !== hit.title ? hit.original_title : null,
+        poster: hit.poster_path || null, backdrop: hit.backdrop_path || null, overview: hit.overview || "",
+        year: (hit.release_date || "").slice(0, 4), releaseDate: hit.release_date || null,
+        rating: hit.vote_average ? Math.round(hit.vote_average * 10) / 10 : null,
+        lang: CONFIG.language, dataV: 0, fetchedAt: 0,
+      };
+      const clean = Object.fromEntries(Object.entries(f).filter(([, v]) => v !== null));
+      await setDoc(ref("movie", "mine", id), { ...data, ...clean });
+      imp.applied++;
+    } catch (err) {
+      console.warn("Import save failed", id, err);
+    }
+  }, 3);
+  imp.phase = "applied";
+  renderImport();
+  toast("Import saved");
 }
 
 // An import link (#import=<gzip+base64url JSON>) opens Settings with the import ready to start.
@@ -1451,40 +1568,11 @@ async function importFromLink() {
     if (data.kind !== "serielistan-movie-import") throw new Error("not an import link");
     imp.items = data.items;
     state.mode = "movie";
-    localStorage.setItem("mode", "movies");
+    localStorage.setItem("mode", "movie");
     renderShell();
     openSettings();
   } catch (err) { toast("Could not read the import link: " + err.message); }
 }
-
-async function runImport() {
-  if (imp.running || !imp.items) return;
-  Object.assign(imp, { running: true, finished: false, done: 0, added: 0, skipped: 0, notFound: [], failed: [], total: imp.items.length });
-  const queue = [...imp.items];
-  const byId = new Map();
-  let last = 0;
-  const worker = async () => {
-    while (queue.length) {
-      const item = queue.shift();
-      // Rate limits and network hiccups: wait and try again, up to three times.
-      for (let attempt = 0; ; attempt++) {
-        try { await importOne(item, byId); break; }
-        catch (err) {
-          if (attempt === 3) { imp.failed.push({ ...item, err: err.message }); break; }
-          await new Promise((r) => setTimeout(r, [2000, 5000, 10000][attempt]));
-        }
-      }
-      imp.done++;
-      if (Date.now() - last > 400) { last = Date.now(); renderImport(); }
-    }
-  };
-  await Promise.all([worker(), worker(), worker()]);
-  imp.running = false;
-  imp.finished = true;
-  renderImport();
-  toast(`Import finished: ${imp.added} movies added`);
-}
-
 
 // ---------- Labels ----------
 // Labels (tags) belong to your own lists. They can be added per item and renamed or removed everywhere.
@@ -1563,6 +1651,13 @@ document.addEventListener("click", async (e) => {
     }
     case "svcRegion": svcRegion = t.dataset.r; loadRegionServices(svcRegion); return renderSettings();
     case "importStart": return runImport();
+    case "importApply": return applyImport();
+    case "importReset": Object.assign(imp, { items: null, phase: "idle", plan: null }); return renderImport();
+    case "saveReview": {
+      const text = $("#reviewText")?.value.trim() || "";
+      await save("movie", "mine", id, { review: text || deleteField() });
+      return toast(text ? "Comment saved" : "Comment removed");
+    }
     case "renameTag": {
       const from = t.dataset.k;
       const to = prompt(`Rename the label “${from}” to:`, from)?.trim();

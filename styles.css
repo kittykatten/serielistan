@@ -225,3 +225,10 @@ details ul { padding-left: 18px; color: var(--muted); }
 .block-label { font-size: 13px; color: var(--muted); margin: 4px 0 6px; }
 .label-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--line); }
 .sheet .seg { margin-bottom: 10px; }
+textarea { font: inherit; color: var(--text); background: var(--surface2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; width: 100%; margin: 10px 0 6px; resize: vertical; outline: none; }
+textarea:focus { border-color: var(--accent); }
+.btn.small { padding: 8px 14px; font-size: 13px; }
+.checklist { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.checklist label { display: flex; gap: 8px; align-items: flex-start; }
+.checklist input { width: auto; margin-top: 3px; }
+ul.plan { padding-left: 18px; }
