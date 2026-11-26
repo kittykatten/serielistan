@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v37";
+const APP_VERSION = "v38";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -188,7 +188,7 @@ async function fetchShowData(id) {
     overview: overview || "",
     year: (d.first_air_date || "").slice(0, 4),
     genres: (d.genres || []).map((g) => g.name),
-    rating: d.vote_average ? Math.round(d.vote_average * 10) / 10 : null,
+    rating: d.vote_average ? Math.round(d.vote_average * 10) / 10 : null, voteCount: d.vote_count ?? null,
     tmdbStatus: d.status,
     ended: ["Ended", "Canceled"].includes(d.status),
     seasons,
@@ -303,7 +303,7 @@ async function fetchMovieData(id) {
     firstShown: firstShown ? firstShown.slice(0, 10) : null,
     runtime: d.runtime || null,
     genres: (d.genres || []).map((g) => g.name),
-    rating: d.vote_average ? Math.round(d.vote_average * 10) / 10 : null,
+    rating: d.vote_average ? Math.round(d.vote_average * 10) / 10 : null, voteCount: d.vote_count ?? null,
     directors: (d.credits?.crew || []).filter((c) => c.job === "Director").map((c) => c.name),
     cast: (d.credits?.cast || []).slice(0, 12).map((c) => ({
       id: c.id, name: c.name, profile: c.profile_path || null, character: c.character || "",
@@ -359,7 +359,25 @@ const TIMES = {
   movie: [["any", "Any length"], ["105", "Under 1 h 45"], ["135", "Under 2 h 15"]],
   tv: [["any", "Any length"], ["300", "Under 5 h"], ["720", "Under 12 h"]],
 };
-const SORTS = [["added", "Recently added"], ["short", "Shortest"], ["rating", "Highest rated"], ["title", "A–Z"]];
+const SORTS = [
+  ["added", "Recently added"], ["addedOld", "Added longest ago"],
+  ["short", "Shortest first"], ["long", "Longest first"],
+  ["az", "A–Z"], ["za", "Z–A"],
+  ["newest", "Newest"], ["oldest", "Oldest"],
+  ["rating", "Best rated"], ["random", "Random order"],
+];
+// TMDB ratings from few votes are unreliable, so "Best rated" pulls them towards the middle
+// until there are enough votes (the same idea as IMDb's top list).
+const weighted = (x) => {
+  if (!x.rating) return 0;
+  if (x.voteCount == null) return x.rating; // not fetched yet
+  const m = 150, c = 6.5;
+  return (x.voteCount / (x.voteCount + m)) * x.rating + (m / (x.voteCount + m)) * c;
+};
+const fmtVotes = (n) => (n == null ? "" : n >= 1000 ? ` (${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k)` : ` (${n})`);
+const ratingText = (x) => (x.rating ? `★ ${x.rating}${fmtVotes(x.voteCount)}` : "");
+const shuffleKey = new Map(); // random order, mixed again each time you pick it
+const yearNum = (x) => Number(yearShown(x)) || null;
 const REMOVED_TAGS = ["Att se 2026"];
 const SCOPE_LABEL = { mine: "My stuff", ours: "Our stuff" };
 
@@ -770,7 +788,7 @@ const starText = (r) => (r ? "★".repeat(Math.floor(r)) + (r % 1 ? "½" : "") :
 function card(kind, x, scope, { skip = false, label = null } = {}) {
   const id = x.tmdbId;
   const meta = kind === "movie"
-    ? [x.runtime && fmtDuration(x.runtime), x.directors?.[0], x.rating && `★ ${x.rating}`].filter(Boolean).join(" · ")
+    ? [x.runtime && fmtDuration(x.runtime), x.directors?.[0], ratingText(x)].filter(Boolean).join(" · ")
     : x.status === "want" ? totalText(x) : "";
   let extra = "";
   const pills = [];
@@ -863,12 +881,20 @@ function renderWatchlist(kind) {
   if (genres.length) items = items.filter((x) => hasGenres(x, genres));
   const anyBoth = all.some((x) => othersWith(kind, x.tmdbId).length && !get(kind, "ours", x.tmdbId));
   const tags = [...new Set(all.flatMap((x) => x.tags || []))].sort((a, b) => a.localeCompare(b));
+  const az = (a, b) => titleOf(a).localeCompare(titleOf(b));
+  const missingLast = (va, vb, dir) => (va == null && vb == null ? 0 : va == null ? 1 : vb == null ? -1 : dir * (va - vb));
   const by = {
     added: (a, b) => (b.addedAt || 0) - (a.addedAt || 0),
-    short: (a, b) => (lengthOf(kind, a) || 1e9) - (lengthOf(kind, b) || 1e9),
-    rating: (a, b) => (b.rating || 0) - (a.rating || 0),
-    title: (a, b) => titleOf(a).localeCompare(titleOf(b)),
-  }[f.sort];
+    addedOld: (a, b) => (a.addedAt || 0) - (b.addedAt || 0),
+    short: (a, b) => missingLast(lengthOf(kind, a), lengthOf(kind, b), 1),
+    long: (a, b) => missingLast(lengthOf(kind, a), lengthOf(kind, b), -1),
+    az, za: (a, b) => az(b, a),
+    newest: (a, b) => missingLast(yearNum(a), yearNum(b), -1) || az(a, b),
+    oldest: (a, b) => missingLast(yearNum(a), yearNum(b), 1) || az(a, b),
+    rating: (a, b) => weighted(b) - weighted(a),
+    random: (a, b) => (shuffleKey.get(a.tmdbId) ?? 0) - (shuffleKey.get(b.tmdbId) ?? 0),
+  }[f.sort === "title" ? "az" : f.sort] || ((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+  if (f.sort === "random") for (const x of items) if (!shuffleKey.has(x.tmdbId)) shuffleKey.set(x.tmdbId, Math.random());
   items = [...items].sort(by);
   const noun = (n) => `${n} ${n === 1 ? K[kind].noun : K[kind].nouns}`;
   $("#wlControls").innerHTML = `
@@ -886,6 +912,7 @@ function renderWatchlist(kind) {
       <div class="ctl-row">
         <span class="ctl-label">Sort</span>
         <select data-change="sort" aria-label="Sort">${SORTS.map(([k, l]) => `<option value="${k}" ${f.sort === k ? "selected" : ""}>${l}</option>`).join("")}</select>
+        ${f.sort === "random" ? `<button class="chip small" data-action="reshuffle">🔀 Shuffle again</button>` : ""}
       </div>
     </div>
     <p class="muted small count">${items.length === all.length ? noun(all.length) : `${items.length} of ${noun(all.length)}`}${!svc ? ` · <a href="#" data-action="menu">Pick your streaming services</a> to filter by them` : ""}</p>`;
@@ -1138,8 +1165,8 @@ function renderSheet() {
   const statusText = { Ended: "Ended", Canceled: "Cancelled", "Returning Series": "Returning", "In Production": "In production" }[x.tmdbStatus] || "";
   const nSeasons = seasonsOf(x).length;
   const meta = kind === "movie"
-    ? [yearShown(mine || x), x.runtime && fmtDuration(x.runtime), x.rating && `★ ${x.rating}`]
-    : [x.year, statusText, nSeasons ? `${nSeasons} season${nSeasons === 1 ? "" : "s"}` : "", x.rating && `★ ${x.rating}`];
+    ? [yearShown(mine || x), x.runtime && fmtDuration(x.runtime), ratingText(x)]
+    : [x.year, statusText, nSeasons ? `${nSeasons} season${nSeasons === 1 ? "" : "s"}` : "", ratingText(x)];
 
   // My stuff
   let myBlock;
@@ -1711,7 +1738,7 @@ async function applyImport() {
           tmdbId: id, title: d.title, originalTitle: d.original_title && d.original_title !== d.title ? d.original_title : null,
           poster: d.poster_path || null, backdrop: d.backdrop_path || null, overview: d.overview || "",
           year: (d.release_date || "").slice(0, 4), releaseDate: d.release_date || null,
-          rating: d.vote_average ? Math.round(d.vote_average * 10) / 10 : null, lang: CONFIG.language, dataV: 0, fetchedAt: 0,
+          rating: d.vote_average ? Math.round(d.vote_average * 10) / 10 : null, voteCount: d.vote_count ?? null, lang: CONFIG.language, dataV: 0, fetchedAt: 0,
         };
       }
       else data = { // seen movies only need the basics; details are fetched when you open one
@@ -1904,6 +1931,7 @@ async function applyDetails(items) {
     if (d.directors?.length && !m.directors?.length) patch.directors = d.directors;
     if (d.country && !m.country) patch.country = d.country;
     if (d.firstShown && !m.firstShown) patch.firstShown = d.firstShown;
+    if (d.voteCount != null && m.voteCount !== d.voteCount) { patch.voteCount = d.voteCount; if (d.rating) patch.rating = d.rating; }
     if (d.views?.length && m.status === "seen" && JSON.stringify(m.views || []) !== JSON.stringify(d.views)) {
       patch.views = d.views;
       patch.seenAt = new Date(d.views[d.views.length - 1] + "T12:00:00").getTime();
@@ -1959,7 +1987,7 @@ document.addEventListener("change", (e) => {
   const t = e.target.closest("[data-change]");
   if (!t) return;
   const f = state.filters[state.mode];
-  if (t.dataset.change === "sort") f.sort = t.value;
+  if (t.dataset.change === "sort") { f.sort = t.value; if (f.sort === "random") shuffleKey.clear(); }
   if (t.dataset.change === "tagFilter") f.tag = t.value || null;
   if (t.dataset.change === "watchedTag") f.watchedTag = t.value || null;
   if (t.dataset.change === "genre" || t.dataset.change === "watchedGenre") {
@@ -2086,6 +2114,7 @@ document.addEventListener("click", async (e) => {
     // Lists and filters
     case "sort": f.sort = t.dataset.k; f.limit = 60; return render();
     case "onServices": f.onServices = !f.onServices; f.limit = 60; return render();
+    case "reshuffle": shuffleKey.clear(); return render();
     case "bothFilter": f.both = !f.both; f.limit = 60; return render();
     case "tag": f.tag = f.tag === t.dataset.k ? null : t.dataset.k; f.limit = 60; return render();
     case "more": f.limit += 60; return render();
