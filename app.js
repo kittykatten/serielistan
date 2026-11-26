@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v29";
+const APP_VERSION = "v30";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -911,7 +911,12 @@ function renderWatched(kind) {
       + (finished.length > state.watchedLimit ? `<button class="btn wide" data-action="watchedMore">Show more</button>` : "");
     if (!waiting.length && !finished.length) html += `<p class="empty">${scope === "ours" ? "Series you finish together end up here." : "Series you have finished end up here."}</p>`;
   } else {
-    const seen = all.filter((x) => x.status === "seen").sort((a, b) => (b.seenAt || 0) - (a.seenAt || 0));
+    const wtags = scope === "mine" ? [...new Set(all.filter((x) => x.status === "seen").flatMap((x) => x.tags || []))].sort((a, b) => a.localeCompare(b)) : [];
+    const wtag = state.filters.movie.watchedTag;
+    const seen = all.filter((x) => x.status === "seen" && (!wtag || x.tags?.includes(wtag))).sort((a, b) => (b.seenAt || 0) - (a.seenAt || 0));
+    if (wtags.length) html += `<div class="controls"><div class="ctl-row"><span class="ctl-label">Filter</span>
+      <select data-change="watchedTag" aria-label="Filter by label" class="${wtag ? "on" : ""}"><option value="">All labels</option>
+      ${wtags.map((tg) => `<option value="${esc(tg)}" ${wtag === tg ? "selected" : ""}>${esc(tg)}</option>`).join("")}</select></div></div>`;
     const year = new Date().getFullYear();
     const thisYear = seen.filter((x) => x.seenAt && new Date(x.seenAt).getFullYear() === year).length;
     html += seen.length
@@ -1030,7 +1035,7 @@ function renderSheet() {
   const el = $("#sheet");
   if (!state.open) return;
   // Do not redraw while you are typing a comment (the text would be lost)
-  if (["reviewText", "whereText"].includes(document.activeElement?.id)) return;
+  if (["reviewText", "whereText", "seenDate"].includes(document.activeElement?.id)) return;
   const { kind, id } = state.open;
   const mine = get(kind, "mine", id), ours = get(kind, "ours", id);
   const scope = activeScope(kind, id);
@@ -1065,6 +1070,7 @@ function renderSheet() {
     myBlock = `
       <section>
         <h3>${mine.seenAt ? `You saw it ${fmtSeen(mine.seenAt)}` : "You have seen it"} <button class="btn link small" data-action="unseen">Not seen</button></h3>
+        ${!mine.seenAt ? `<label class="field-label" for="seenDate">When did you see it? (if you remember)</label><input id="seenDate" type="date" max="${todayISO()}">` : ""}
         ${mine.views?.length > 1 ? `<p class="muted small">Seen ${mine.views.length} times: ${mine.views.map((d) => fmtSeen(new Date(d + "T12:00:00").getTime())).join(", ")}</p>` : ""}
         <button class="btn link small" data-action="seenAgain">＋ Seen it again today</button>
         ${movieStars(mine.myRating || 0)}
@@ -1675,7 +1681,10 @@ function viewings() {
       const dt = at ? new Date(at) : null;
       const year = dt ? dt.getFullYear() : null, month = dt ? dt.getMonth() : null;
       // A festival viewing: noted as GFF in your sheet, or labelled GFF that year and seen in Jan or Feb
-      const gff = /gff/i.test(m.note || "") || (year && month <= 1 && (m.tags || []).includes(`GFF ${year}`));
+      // A festival viewing: noted as GFF in your sheet. Without a note: labelled GFF that year, seen in
+      // Jan or Feb, and not at a place that is clearly something else (Netflix, at home and so on).
+      const gff = /gff/i.test(m.note || "")
+        || (!m.where && year && month <= 1 && (m.tags || []).includes(`GFF ${year}`));
       out.push({ m, at, year, month, gff });
     }
   }
@@ -1750,12 +1759,15 @@ function renderStats() {
     </div>`;
 
   // 6. Where
-  const whereRows = topList(vs, (m) => m.where, 8);
-  const cinema = vs.filter((v) => /^bio\b/i.test(v.m.where || "")).length;
+  // "Bio, Roy" is the cinema Roy; everything else (Netflix, Draken, Nedladdad …) is somewhere else
+  const isCinema = (w) => /^bio\b/i.test(w || "");
+  const cinemaRows = topList(vs.filter((v) => isCinema(v.m.where)), (m) => m.where.replace(/^bio,?\s*/i, "") || "Cinema", 50);
+  const otherRows = topList(vs.filter((v) => v.m.where && !isCinema(v.m.where)), (m) => m.where, 10);
+  const cinema = cinemaRows.reduce((sum, [, n]) => sum + n, 0);
   const withWhere = vs.filter((v) => v.m.where).length;
   const where = `
-    ${withWhere ? `<p class="small">${Math.round((cinema / withWhere) * 100)} % at the cinema · ${withWhere - cinema} at home or elsewhere <span class="muted">(${withWhere} of ${vs.length} have a place)</span></p>` : ""}
-    ${top("Most used", whereRows)}`;
+    ${withWhere ? `<p class="small">${Math.round((cinema / withWhere) * 100)} % at the cinema · ${withWhere - cinema} elsewhere <span class="muted">(${withWhere} of ${vs.length} have a place)</span></p>` : ""}
+    <div class="tops">${top("Cinemas", cinemaRows)}${top("Elsewhere", otherRows)}</div>`;
 
   // 7. Ratings
   const steps = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
@@ -1779,7 +1791,10 @@ function renderStats() {
     <section class="card stat"><h3>Goals</h3><p class="muted small">Goals for 2027 (how many movies, and what kinds) are coming here.</p></section>
     <section class="card stat"><h3>Per year</h3>
       <table class="yt"><thead><tr><th>Year</th><th>Movies</th><th>Hours</th><th>/month</th><th>Excl. GFF</th><th>Hours</th></tr></thead><tbody>${perYear}</tbody></table>
-      ${undated ? `<p class="muted small">${undated} movies have no date and are only counted in All years.</p>` : ""}
+      ${undated ? `<details class="small"><summary>${undated} movies have no date and are only counted in All years</summary>
+        <p class="muted">Seen before you kept a diary. Open one to add the date if you know it.</p>
+        <ol class="best">${all.filter((v) => !v.year).map((v) => v.m).sort((a, b) => a.title.localeCompare(b.title)).map((m) => `<li data-action="open" data-kind="movie" data-id="${m.tmdbId}"><span>${esc(m.title)} <span class="muted">${esc(yearShown(m))}</span></span></li>`).join("")}</ol>
+      </details>` : ""}
     </section>
     <section class="card stat"><h3>Month by month</h3>${grid}</section>
     <section class="card stat"><h3>Top lists ${sel ? sel : "· all years"}</h3>${tops}</section>
@@ -1850,6 +1865,7 @@ document.addEventListener("change", (e) => {
   const f = state.filters[state.mode];
   if (t.dataset.change === "sort") f.sort = t.value;
   if (t.dataset.change === "tagFilter") f.tag = t.value || null;
+  if (t.dataset.change === "watchedTag") f.watchedTag = t.value || null;
   f.limit = 60;
   render();
 });
@@ -1908,7 +1924,10 @@ document.addEventListener("click", async (e) => {
     case "saveReview": {
       const text = $("#reviewText")?.value.trim() || "";
       const where = $("#whereText")?.value.trim() || "";
-      await save("movie", "mine", id, { review: text || deleteField(), where: where || deleteField() });
+      const date = $("#seenDate")?.value || "";
+      const patch = { review: text || deleteField(), where: where || deleteField() };
+      if (date) { patch.views = [date]; patch.seenAt = new Date(date + "T12:00:00").getTime(); }
+      await save("movie", "mine", id, patch);
       return toast("Saved");
     }
     case "renameTag": {
