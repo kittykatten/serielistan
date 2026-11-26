@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v32";
+const APP_VERSION = "v33";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -2069,7 +2069,12 @@ document.addEventListener("click", async (e) => {
       const views = [...(m.views?.length ? m.views : m.seenAt ? [new Date(m.seenAt).toLocaleDateString("sv-SE")] : []), todayISO()];
       return save("movie", "mine", id, { seenAt: Date.now(), views }).then(() => toast(`Seen ${views.length} times`));
     }
-    case "unseen": return save("movie", "mine", id, { status: "want", seenAt: deleteField(), myRating: deleteField(), views: deleteField() });
+    case "unseen": {
+      // Undo a logging: back to the watchlist, and everything you logged about the viewing is removed
+      const m = get("movie", "mine", id);
+      if (!confirm(`Mark ${m.title} as not seen? The date, rating, place, note and comment are removed.`)) return;
+      return save("movie", "mine", id, { status: "want", seenAt: deleteField(), myRating: deleteField(), views: deleteField(), where: deleteField(), note: deleteField(), review: deleteField() });
+    }
     case "statsYear": statsState.year = t.dataset.y ? Number(t.dataset.y) : null; return render();
     case "importDetails": { const items = imp.details; imp.details = null; return applyDetails(items); }
     case "rate": {
