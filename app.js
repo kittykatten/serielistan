@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v45";
+const APP_VERSION = "v46";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -146,13 +146,13 @@ function foreignProviders(results, already) {
     const wp = results?.[f.r];
     if (!wp || already.some((p) => p.id === f.id) || out.some((p) => p.id === f.id)) continue;
     const hit = [...(wp.flatrate || []), ...(wp.free || []), ...(wp.ads || [])].find((p) => p.provider_id === f.id);
-    if (hit) out.push({ id: f.id, name: `${hit.provider_name} (${f.r})`, logo: hit.logo_path || null });
+    if (hit) out.push({ id: f.id, name: `${hit.provider_name} (${f.r})`, logo: hit.logo_path || null, link: wp.link || null });
   }
   return out;
 }
 function streamList(d) {
   const wp = d["watch/providers"]?.results?.[CONFIG.region] || {};
-  const local = providerList(wp.flatrate, wp.free, wp.ads);
+  const local = providerList(wp.flatrate, wp.free, wp.ads).map((p) => ({ ...p, link: wp.link || null }));
   return [...local, ...foreignProviders(d["watch/providers"]?.results, local)];
 }
 
@@ -374,9 +374,17 @@ const kwOf = (x) => new Set((x.keywords || []).map((k) => k.toLowerCase()));
 const gOf = (x) => new Set(x.genres || []);
 const any = (set, list) => list.some((v) => set.has(v));
 const MOODS = {
-  feelgood: { label: "Feelgood", test: (x, g, k) =>
-    (any(g, ["Comedy", "Family", "Romance", "Animation", "Music", "Kids"]) || any(k, ["feel-good", "heartwarming", "witty", "lighthearted", "whimsical", "hopeful", "inspirational", "joyful", "playful", "comforting", "cheerful", "amused", "hilarious", "sweet"]))
-    && !any(g, ["Horror", "War", "Thriller", "War & Politics"]) && !any(k, ["tragic", "gore", "slasher", "grief"]) },
+  // Feelgood: a light genre is required; a drama also needs a light tone; dark themes rule it out
+  feelgood: { label: "Feelgood", test: (x, g, k) => {
+    const light = ["feel-good", "heartwarming", "witty", "lighthearted", "whimsical", "joyful", "playful", "comforting", "cheerful", "amused", "hilarious", "sweet", "charming", "wholesome", "funny"];
+    const dark = ["tragic", "gore", "slasher", "grief", "harsh", "bleak", "disturbing", "shocking", "child abuse", "abuse", "rape", "sexual abuse", "suicide", "dying and death", "death of a child",
+      "terminal illness", "cancer", "holocaust", "genocide", "war crimes", "torture", "addiction", "drug addiction", "depression", "domestic violence", "murder", "serial killer"];
+    if (!any(g, ["Comedy", "Family", "Animation", "Romance", "Music", "Kids"])) return false;
+    if (any(g, ["Horror", "War", "Thriller", "War & Politics"]) || any(k, dark)) return false;
+    if (g.has("Drama") && !g.has("Comedy") && !g.has("Family") && !g.has("Animation") && !any(k, light)) return false;
+    if (g.has("Documentary") && !any(k, light)) return false; // a music documentary is not feelgood by itself
+    return true;
+  } },
   artsy: { label: "Artsy fartsy", test: (x, g, k) =>
     (x.tags || []).some((t) => /^GFF/.test(t)) || (g.has("Drama") && ((x.originalLanguage && x.originalLanguage !== "en") || (x.voteCount != null && x.voteCount < 300))) },
   bang: { label: "Bang bang", test: (x, g, k) =>
@@ -405,7 +413,7 @@ const langOk = (x, v) => v === "any" || !v || (x.originalLanguage && (v === "und
 const isLimited = (x) => x.tvType === "Miniseries" || (x.tvType == null && x.ended && seasonsOf(x).length === 1);
 const TIMES = {
   movie: [["any", "Any length"], ["90", "Under 90 min"], ["120", "Under 2 h"]],
-  tv: [["any", "Any length"], ["300", "Under 5 h"], ["600", "Under 10 h"]],
+  tv: [["any", "Any length"], ["30", "Episodes under 30 min"], ["45", "Under 45 min"], ["60", "Under 1 h"]],
 };
 const SORTS = [
   ["added", "Recently added"], ["addedOld", "Added longest ago"],
@@ -869,7 +877,17 @@ const servicesFor = (scope) => (scope === "ours" ? ourServices() : myServices())
 const onServices = (x, set) => (x.providers?.stream || []).some((p) => set.has(p.id));
 
 // ---------- Cards ----------
-const lengthOf = (kind, x) => (kind === "movie" ? x.runtime || null : runtimeMinutes(x, false));
+// Typical episode length (minutes): the middle value of the known episode runtimes
+function episodeMinutes(x) {
+  const rts = seasonsOf(x).flatMap((s) => s.rt || []).filter(Boolean).sort((a, b) => a - b);
+  return rts.length ? rts[Math.floor(rts.length / 2)] : x.runtime || null;
+}
+// Movies: length of the movie. Series: length of an episode (what matters when you pick one).
+const lengthOf = (kind, x) => (kind === "movie" ? x.runtime || null : episodeMinutes(x));
+function seriesMeta(x) {
+  const ns = seasonsOf(x).length, { total } = episodeCounts(x), m = episodeMinutes(x);
+  return [ns && `${ns} season${ns === 1 ? "" : "s"}`, total && `${total} episodes`, m && `${m} min episodes`].filter(Boolean).join(" · ");
+}
 // Seen dates show the year unless it is this year.
 const fmtSeen = (d) => fmtDate(d);
 // Letterboxd-style stars: 3.5 -> ★★★½
@@ -879,7 +897,7 @@ function card(kind, x, scope, { skip = false, label = null } = {}) {
   const id = x.tmdbId;
   const meta = kind === "movie"
     ? [x.runtime && fmtDuration(x.runtime), x.directors?.[0], ratingText(x)].filter(Boolean).join(" · ")
-    : x.status === "want" ? totalText(x) : "";
+    : x.status === "want" ? seriesMeta(x) : "";
   let extra = "";
   const pills = [];
   if (label) pills.push(label);
@@ -1456,7 +1474,13 @@ function providersSection(show, services = ourServices(), title = "Where can we 
         <section>
           <h3>${title}</h3>
           ${ours.length
-            ? `<div class="providers">${ours.map((p) => `<div class="prov">${p.logo ? `<img src="${img(p.logo, "w92")}" alt="">` : ""}<span>${esc(p.name)}</span></div>`).join("")}</div>`
+            ? `<div class="providers">${ours.map((p) => {
+                // Opens the page that lists where to watch, for the right country. Tap the service there
+                // and you land on the movie or series on that service.
+                const href = p.link || (/\([A-Z]{2}\)$/.test(p.name) ? null : prov.link);
+                const inner = `${p.logo ? `<img src="${img(p.logo, "w92")}" alt="">` : ""}<span>${esc(p.name)}</span>${href ? `<span class="go">↗</span>` : ""}`;
+                return href ? `<a class="prov" href="${esc(href)}" target="_blank" rel="noopener">${inner}</a>` : `<div class="prov">${inner}</div>`;
+              }).join("")}</div>`
             : `<p class="muted">${services ? "Not on any of your services right now." : "Not included in any streaming service right now."}</p>`}
           ${prov.link ? `<a class="small" href="${esc(prov.link)}" target="_blank" rel="noopener">See all options ↗</a>` : ""}
           <p class="attribution">Streaming info from JustWatch · updated ${fmtDate(show.fetchedAt)}</p>

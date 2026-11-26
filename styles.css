@@ -270,3 +270,4 @@ ol.best li { cursor: pointer; }
 .news h3 { display: flex; justify-content: space-between; align-items: center; font-size: 15px; margin-bottom: 6px; }
 .news ul { margin: 0; padding: 0; list-style: none; font-size: 14px; }
 .news li { padding: 5px 0; border-top: 1px solid var(--line); cursor: pointer; }
+a.prov { color: var(--text); text-decoration: none; } .prov .go { color: var(--muted); margin-left: 2px; }
