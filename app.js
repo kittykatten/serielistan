@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v46";
+const APP_VERSION = "v47";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -601,7 +601,7 @@ function scheduleOverlap() { clearTimeout(overlapTimer); overlapTimer = setTimeo
 async function updateOverlap() {
   if (!crypto?.subtle || !state.user) return;
   const uid = state.user.uid;
-  const mineWant = KINDS.flatMap((kind) => list(kind, "mine").filter((x) => x.status === "want").map((x) => [kind, x.tmdbId]));
+  const mineWant = KINDS.flatMap((kind) => list(kind, "mine").filter((x) => x.status === "want" && myInterest(x) > 0).map((x) => [kind, x.tmdbId]));
   // Publish mine
   const my = (await Promise.all(mineWant.map(([k, id]) => wlHash(uid, k, id)))).sort();
   const cur = state.users[uid]?.wl || [];
@@ -909,6 +909,7 @@ function card(kind, x, scope, { skip = false, label = null } = {}) {
   } else if (scope === "mine" && x.status === "want" && get(kind, "ours", id)) {
     pills.push(`<span class="pill later">Suggested</span>`);
   }
+  if (scope === "mine" && x.status === "want" && myInterest(x) < 2) pills.push(`<span class="pill">${myInterest(x) === 1 ? "Maybe" : "No thanks"}</span>`);
   if (kind === "tv" && x.status === "want") {
     if (isLimited(x)) pills.push(`<span class="pill later">Limited series</span>`);
     else if (x.ended) pills.push(`<span class="pill later">Finished</span>`);
@@ -965,6 +966,18 @@ function genreSelects(items, picked, change) {
 
 // ---------- Watchlist ----------
 const myWatchlist = (kind) => list(kind, "mine").filter((x) => x.status === "want" && !oursActive(kind, x.tmdbId));
+// Your own interest in things on your watchlist: 2 Yes please (default), 1 Maybe, 0 No thanks (hidden, never removed)
+const myInterest = (x) => x.myInterest ?? 2;
+const INTEREST_VIEWS = [["yes", "Yes please"], ["maybe", "Yes please + Maybe"], ["maybeOnly", "Maybe only"], ["no", "No thanks"]];
+const interestOk = (x, v) => {
+  const i = myInterest(x);
+  return v === "maybe" ? i >= 1 : v === "maybeOnly" ? i === 1 : v === "no" ? i === 0 : i === 2;
+};
+function myInterestRow(kind, mine) {
+  const v = myInterest(mine);
+  return `<div class="vote-row mine-interest"><span class="who">Your interest</span>
+    <div class="vote-btns">${INTEREST.map((i) => `<button class="${v === i.v ? "on" : ""}" data-action="myInterest" data-v="${i.v}" title="${i.label}" aria-label="${i.label}">${thumbs(i.v)}<small>${i.label}</small></button>`).join("")}</div></div>`;
+}
 
 function renderWatchlist(kind) {
   const scope = state.scope[kind].watchlist;
@@ -989,6 +1002,8 @@ function renderWatchlist(kind) {
   let items = all;
   const q = f.q.trim().toLowerCase();
   if (q) items = items.filter((x) => [titleOf(x), x.originalTitle, x.originalName, ...(x.directors || []), ...(x.creators || [])].filter(Boolean).join(" ").toLowerCase().includes(q));
+  else items = items.filter((x) => interestOk(x, f.interest || "yes")); // searching finds everything, also hidden ones
+  const hiddenCount = q ? 0 : all.length - all.filter((x) => interestOk(x, f.interest || "yes")).length;
   if (f.onServices && svc) items = items.filter((x) => onServices(x, svc));
   if (f.tag) items = items.filter((x) => x.tags?.includes(f.tag));
   if (f.both) items = items.filter((x) => othersWith(kind, x.tmdbId).length && !get(kind, "ours", x.tmdbId));
@@ -1020,6 +1035,7 @@ function renderWatchlist(kind) {
         ${svc ? `<button class="chip ${f.onServices ? "on" : ""}" data-action="onServices">On my services</button>` : ""}
         ${anyBoth || f.both ? `<button class="chip ${f.both ? "on" : ""}" data-action="bothFilter">Also on ${esc(otherNames())}'s list</button>` : ""}
         ${genreSelects(all, f.genres || [], "genre")}
+        <select data-change="interest" aria-label="Your interest" class="${(f.interest || "yes") !== "yes" ? "on" : ""}">${INTEREST_VIEWS.map(([v, l]) => `<option value="${v}" ${(f.interest || "yes") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
         <select data-change="lang" aria-label="Language" class="${f.lang && f.lang !== "any" ? "on" : ""}">${LANGS.map(([v, l]) => `<option value="${v}" ${(f.lang || "any") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
         ${tags.length ? `<select data-change="tagFilter" aria-label="Filter by label" class="${f.tag ? "on" : ""}">
           <option value="">All labels</option>
@@ -1032,7 +1048,7 @@ function renderWatchlist(kind) {
         ${f.sort === "random" ? `<button class="chip small" data-action="reshuffle">🔀 Shuffle again</button>` : ""}
       </div>
     </div>
-    <p class="muted small count">${items.length === all.length ? noun(all.length) : `${items.length} of ${noun(all.length)}`}${!svc ? ` · <a href="#" data-action="menu">Pick your streaming services</a> to filter by them` : ""}</p>`;
+    <p class="muted small count">${noun(items.length)}${hiddenCount ? ` · ${hiddenCount} hidden by your interest` : ""}${!svc ? ` · <a href="#" data-action="menu">Pick your streaming services</a> to filter by them` : ""}</p>`;
   const shown = items.slice(0, f.limit);
   $("#wlList").innerHTML = items.length
     ? `<div class="list">${shown.map((x) => card(kind, x, "mine")).join("")}</div>
@@ -1066,7 +1082,7 @@ function pickCandidates(kind, scope) {
   const p = state.pick[kind];
   const svc = servicesFor(scope);
   const pool = scope === "mine"
-    ? myWatchlist(kind)
+    ? myWatchlist(kind).filter((x) => myInterest(x) === 2 || (state.pick[kind].maybes && myInterest(x) === 1))
     : list(kind, "ours").filter((x) => x.status === "want" && !members().some((m) => x.interest?.[m.uid] === 0));
   return pool.filter((x) => {
     if (p.skipped.has(x.tmdbId)) return false;
@@ -1111,6 +1127,7 @@ function renderPick(kind, scope) {
       ${kind === "tv" ? `<div class="pick-label">What kind?</div><div class="chips">
         <button class="chip ${p.limited ? "on" : ""}" data-action="pickToggle" data-k="limited">Limited series</button>
         <button class="chip ${p.finished ? "on" : ""}" data-action="pickToggle" data-k="finished">Finished</button></div>` : ""}
+      ${scope === "mine" ? `<div class="chips"><button class="chip ${p.maybes ? "on" : ""}" data-action="pickToggle" data-k="maybes">Include maybes</button></div>` : ""}
       <p class="muted small">${svc ? `Only ${scope === "ours" ? "things on your shared services" : "things on your services"}.` : `<a href="#" data-action="menu">Pick your streaming services</a> to only get things you can watch.`}</p>
       <button class="btn primary wide" data-action="pick" data-scope="${scope}" ${n ? "" : "disabled"}>${results.length ? "🎲 Pick again" : `🎲 Pick 3`}</button>
       <p class="muted small">${n} ${n === 1 ? noun : K[kind].nouns} match.${p.skipped.size ? ` ${p.skipped.size} skipped tonight · <a href="#" data-action="unskip">bring back</a>` : ""}</p>
@@ -1301,10 +1318,10 @@ function renderSheet() {
     myBlock = `<button class="btn primary wide" data-action="add" data-kind="${kind}" data-id="${id}">＋ Add to my watchlist</button>`;
   } else if (kind === "tv") {
     myBlock = scope === "mine" || !oursActive(kind, id)
-      ? `<div class="block-label">My stuff</div><div class="seg">${STATUS_BTNS.tv.map(([k, l]) => `<button class="${mine.status === k ? "on" : ""}" data-action="status" data-scope="mine" data-s="${k}">${l}</button>`).join("")}</div>`
+      ? `<div class="block-label">My stuff</div><div class="seg">${STATUS_BTNS.tv.map(([k, l]) => `<button class="${mine.status === k ? "on" : ""}" data-action="status" data-scope="mine" data-s="${k}">${l}</button>`).join("")}</div>${mine.status === "want" ? myInterestRow(kind, mine) : ""}`
       : `<p class="muted small">You watch this together, so episodes are shared below.</p>`;
   } else if (mine.status !== "seen") {
-    myBlock = `<button class="btn primary wide" data-action="seen">✓ Mark as seen</button>`;
+    myBlock = `${myInterestRow(kind, mine)}<button class="btn primary wide" data-action="seen">✓ Mark as seen</button>`;
   } else {
     const together = ours?.status === "seen";
     myBlock = `
@@ -1427,12 +1444,12 @@ function renderSheet() {
           </div>
         </div>
         ${myBlock}
-        ${mine ? labelsSection(kind, mine) : ""}
         ${x.overview ? `<p class="overview">${esc(x.overview)}</p>` : `<p class="muted">No description available.</p>`}
         ${facts ? `<div class="facts small">${facts}</div>` : ""}
         <div class="links">${links.map(([href, label]) => `<a class="linkbtn" href="${esc(href)}" target="_blank" rel="noopener">${label} ↗</a>`).join("")}</div>
         ${kind === "tv" && x.nextAir ? `<p class="muted small">Next episode (${epLabel(x.nextAir)}) airs ${fmtDate(x.nextAir.date)}.</p>` : ""}
         ${providersSection(x, scope === "ours" ? ourServices() : myServices(), scope === "ours" ? "Where can we watch it?" : "Where can I watch it?")}
+        ${mine ? labelsSection(kind, mine) : ""}
         ${episodes}
         ${ourBlock}
         ${castSection(x, K[kind].path)}
@@ -2056,7 +2073,12 @@ async function applyDetails(items) {
   Object.assign(imp, { phase: "applying", done: 0, total: items.length, applied: 0 });
   renderImport();
   await runInParallel(items, async (d) => {
-    const m = get("movie", "mine", d.id);
+    const dk = d.kind || "movie";
+    const m = get(dk, "mine", d.id);
+    if (m && dk === "tv") {
+      if (d.myInterest != null && m.myInterest == null) { await updateDoc(ref("tv", "mine", d.id), { myInterest: d.myInterest }).catch(() => {}); imp.applied++; }
+      return;
+    }
     if (!m) return;
     const patch = {};
     if (d.runtime && !m.runtime) patch.runtime = d.runtime;
@@ -2066,6 +2088,7 @@ async function applyDetails(items) {
     if (d.firstShown && !m.firstShown) patch.firstShown = d.firstShown;
     if (d.voteCount != null && m.voteCount !== d.voteCount) { patch.voteCount = d.voteCount; if (d.rating) patch.rating = d.rating; }
     if (d.keywords && !m.keywords) patch.keywords = d.keywords;
+    if (d.myInterest != null && m.myInterest == null && m.status === "want") patch.myInterest = d.myInterest;
     if (d.originalLanguage && !m.originalLanguage) patch.originalLanguage = d.originalLanguage;
     if (d.views?.length && m.status === "seen" && JSON.stringify(m.views || []) !== JSON.stringify(d.views)) {
       patch.views = d.views;
@@ -2134,6 +2157,7 @@ document.addEventListener("change", (e) => {
   if (t.dataset.change === "tagFilter") f.tag = t.value || null;
   if (t.dataset.change === "watchedTag") f.watchedTag = t.value || null;
   if (t.dataset.change === "lang") f.lang = t.value;
+  if (t.dataset.change === "interest") f.interest = t.value;
   if (t.dataset.change === "genre" || t.dataset.change === "watchedGenre") {
     const key = t.dataset.change === "genre" ? "genres" : "watchedGenres";
     const gs = [...(f[key] || [])];
@@ -2280,6 +2304,10 @@ document.addEventListener("click", async (e) => {
     case "dismissNews": {
       for (const [k, x] of newOnServices().filter(([k2]) => k2 === kind)) updateDoc(ref(k, "mine", x.tmdbId), { newOn: deleteField() }).catch(() => {});
       return;
+    }
+    case "myInterest": {
+      const v = Number(t.dataset.v);
+      return save(kind, "mine", id, { myInterest: v === 2 ? deleteField() : v }).then(() => toast(v === 0 ? "Hidden from your watchlist (still here if you search)" : v === 1 ? "Marked as Maybe" : "Yes please"));
     }
     case "pickToggle": p[t.dataset.k] = !p[t.dataset.k]; p.results = null; return render();
     case "pick": doPick(state.mode, t.dataset.scope || scopeHere()); return render();
