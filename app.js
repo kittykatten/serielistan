@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v30";
+const APP_VERSION = "v31";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -515,6 +515,14 @@ async function migrate() {
       }
       await updateDoc(doc(db, "users", uid), { migratedSeries: true });
     } catch (err) { console.warn("Series move failed", err); }
+  }
+  // Corrections you confirmed: viewing dates
+  const VIEW_FIXES = { 680813: ["2021-02-06", "2022-02-06"] }; // Flee, seen twice
+  for (const [fid, views] of Object.entries(VIEW_FIXES)) {
+    const m = get("movie", "mine", fid);
+    if (m && JSON.stringify(m.views || []) !== JSON.stringify(views)) {
+      updateDoc(ref("movie", "mine", fid), { views, seenAt: new Date(views[views.length - 1] + "T12:00:00").getTime() }).catch(() => {});
+    }
   }
   // Labels you no longer want, and festival labels shortened to "GFF 2022"
   const fixTag = (t) => t.replace(/^Göteborg Film Festival (\d+)/, "GFF $1");
@@ -1665,6 +1673,7 @@ async function importFromLink() {
 
 // ---------- Statistics (movies, only your own) ----------
 // Every viewing counts, also movies you watched together: they are in your own Watched list too.
+const STATS_FROM = 2020; // your sheet starts in 2020; earlier and undated viewings are left out
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const countryName = (() => {
   let dn = null;
@@ -1681,10 +1690,12 @@ function viewings() {
       const dt = at ? new Date(at) : null;
       const year = dt ? dt.getFullYear() : null, month = dt ? dt.getMonth() : null;
       // A festival viewing: noted as GFF in your sheet, or labelled GFF that year and seen in Jan or Feb
-      // A festival viewing: noted as GFF in your sheet. Without a note: labelled GFF that year, seen in
-      // Jan or Feb, and not at a place that is clearly something else (Netflix, at home and so on).
-      const gff = /gff/i.test(m.note || "")
-        || (!m.where && year && month <= 1 && (m.tags || []).includes(`GFF ${year}`));
+      // Seen AT the festival: only what your sheet says (note GFF…). The GFF label only means
+      // the movie was shown at the festival, which is not the same thing.
+      // "GFF2021" only marks the viewing in 2021 (Flee was seen again in 2022, not at the festival)
+      const noted = /gff\s*(\d{4})/i.exec(m.note || "");
+      const gff = noted ? Number(noted[1]) === year : /gff/i.test(m.note || "");
+      if (!year || year < STATS_FROM) continue;
       out.push({ m, at, year, month, gff });
     }
   }
@@ -1707,7 +1718,6 @@ function renderStats() {
   const years = [...new Set(all.map((v) => v.year).filter(Boolean))].sort((a, b) => b - a);
   const sel = statsState.year;
   const vs = sel ? all.filter((v) => v.year === sel) : all;
-  const undated = all.filter((v) => !v.year).length;
   const missingDetails = list("movie", "mine").filter((m) => m.status === "seen" && !m.runtime).length;
 
   // 1. Tiles
@@ -1791,10 +1801,7 @@ function renderStats() {
     <section class="card stat"><h3>Goals</h3><p class="muted small">Goals for 2027 (how many movies, and what kinds) are coming here.</p></section>
     <section class="card stat"><h3>Per year</h3>
       <table class="yt"><thead><tr><th>Year</th><th>Movies</th><th>Hours</th><th>/month</th><th>Excl. GFF</th><th>Hours</th></tr></thead><tbody>${perYear}</tbody></table>
-      ${undated ? `<details class="small"><summary>${undated} movies have no date and are only counted in All years</summary>
-        <p class="muted">Seen before you kept a diary. Open one to add the date if you know it.</p>
-        <ol class="best">${all.filter((v) => !v.year).map((v) => v.m).sort((a, b) => a.title.localeCompare(b.title)).map((m) => `<li data-action="open" data-kind="movie" data-id="${m.tmdbId}"><span>${esc(m.title)} <span class="muted">${esc(yearShown(m))}</span></span></li>`).join("")}</ol>
-      </details>` : ""}
+      <p class="muted small">Counted from 2020, when your sheet starts. Every viewing counts, also rewatches.</p>
     </section>
     <section class="card stat"><h3>Month by month</h3>${grid}</section>
     <section class="card stat"><h3>Top lists ${sel ? sel : "· all years"}</h3>${tops}</section>
