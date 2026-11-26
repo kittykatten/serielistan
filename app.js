@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v31";
+const APP_VERSION = "v32";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -1043,7 +1043,7 @@ function renderSheet() {
   const el = $("#sheet");
   if (!state.open) return;
   // Do not redraw while you are typing a comment (the text would be lost)
-  if (["reviewText", "whereText", "seenDate"].includes(document.activeElement?.id)) return;
+  if (["reviewText", "whereText", "seenDate", "noteText"].includes(document.activeElement?.id)) return;
   const { kind, id } = state.open;
   const mine = get(kind, "mine", id), ours = get(kind, "ours", id);
   const scope = activeScope(kind, id);
@@ -1078,14 +1078,18 @@ function renderSheet() {
     myBlock = `
       <section>
         <h3>${mine.seenAt ? `You saw it ${fmtSeen(mine.seenAt)}` : "You have seen it"} <button class="btn link small" data-action="unseen">Not seen</button></h3>
-        ${!mine.seenAt ? `<label class="field-label" for="seenDate">When did you see it? (if you remember)</label><input id="seenDate" type="date" max="${todayISO()}">` : ""}
         ${mine.views?.length > 1 ? `<p class="muted small">Seen ${mine.views.length} times: ${mine.views.map((d) => fmtSeen(new Date(d + "T12:00:00").getTime())).join(", ")}</p>` : ""}
         <button class="btn link small" data-action="seenAgain">＋ Seen it again today</button>
         ${movieStars(mine.myRating || 0)}
         <p class="muted small">Tap a star to rate. Tap it again for half a star.</p>
+        <label class="field-label" for="seenDate">${mine.views?.length > 1 ? "Date of the latest viewing" : "When did you see it?"}</label>
+        <input id="seenDate" type="date" max="${todayISO()}" value="${esc(lastView(mine) || "")}">
         <label class="field-label" for="whereText">Where did you watch it?</label>
         <input id="whereText" list="wherePlaces" value="${esc(mine.where || "")}" placeholder="For example Bio, Roy or Netflix" autocomplete="off">
         <datalist id="wherePlaces">${[...new Set(list("movie", "mine").map((m) => m.where).filter(Boolean))].sort().map((w) => `<option value="${esc(w)}">`).join("")}</datalist>
+        <label class="field-label" for="noteText">Note <span class="muted">(for example GFF2026#21 if you saw it at the festival)</span></label>
+        <input id="noteText" value="${esc(mine.note || "")}" placeholder="Note" autocomplete="off">
+        ${!mine.note ? `<button class="chip small" data-action="useGffNumber">Use ${esc(nextGffNote())}</button>` : ""}
         <label class="field-label" for="reviewText">Comment</label>
         <textarea id="reviewText" rows="${mine.review ? Math.min(10, 3 + Math.floor(mine.review.length / 60)) : 3}" placeholder="Write a comment…">${esc(mine.review || "")}</textarea>
         <button class="btn small" data-action="saveReview">Save</button>
@@ -1144,7 +1148,7 @@ function renderSheet() {
     kind === "tv" && totalText(x) && `<div><span class="muted">Length</span> ${totalText(x)}${x.nextAir ? " so far" : ""}</div>`,
     kind === "movie" && (x.firstShown || x.releaseDate) && `<div><span class="muted">First shown</span> ${new Date(x.firstShown || x.releaseDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</div>`,
     mine?.where && mine.status !== "seen" && `<div><span class="muted">Watched at</span> ${esc(mine.where)}</div>`,
-    mine?.note && `<div><span class="muted">Note</span> ${esc(mine.note)}</div>`,
+    mine?.note && mine.status !== "seen" && `<div><span class="muted">Note</span> ${esc(mine.note)}</div>`,
     mine?.tags?.length && `<div><span class="muted">Lists</span> ${esc(mine.tags.join(", "))}</div>`,
   ].filter(Boolean).join("");
 
@@ -1836,6 +1840,13 @@ async function applyDetails(items) {
 }
 
 const todayISO = () => new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD in your time zone
+const lastView = (m) => (m.views?.length ? m.views[m.views.length - 1] : m.seenAt ? new Date(m.seenAt).toLocaleDateString("sv-SE") : null);
+// Next festival number this year, e.g. GFF2026#21 when GFF2026#20 is the highest so far
+function nextGffNote() {
+  const y = new Date().getFullYear();
+  const nums = list("movie", "mine").map((m) => new RegExp(`gff\\s*${y}\\s*#\\s*(\\d+)`, "i").exec(m.note || "")).filter(Boolean).map((r) => Number(r[1]));
+  return `GFF${y}#${nums.length ? Math.max(...nums) + 1 : 1}`;
+}
 
 // ---------- Labels ----------
 // Labels (tags) belong to your own lists. They can be added per item and renamed or removed everywhere.
@@ -1928,12 +1939,21 @@ document.addEventListener("click", async (e) => {
     case "importStart": return runImport();
     case "importApply": return applyImport();
     case "importReset": Object.assign(imp, { items: null, details: null, phase: "idle", plan: null }); return renderImport();
+    case "useGffNumber": { const el = $("#noteText"); if (el) { el.value = nextGffNote(); el.focus(); } t.remove(); return; }
     case "saveReview": {
       const text = $("#reviewText")?.value.trim() || "";
       const where = $("#whereText")?.value.trim() || "";
       const date = $("#seenDate")?.value || "";
-      const patch = { review: text || deleteField(), where: where || deleteField() };
-      if (date) { patch.views = [date]; patch.seenAt = new Date(date + "T12:00:00").getTime(); }
+      const note = $("#noteText")?.value.trim() || "";
+      const patch = { review: text || deleteField(), where: where || deleteField(), note: note || deleteField() };
+      if (date) {
+        // The date belongs to the latest viewing
+        const m = get("movie", "mine", id);
+        const views = m.views?.length ? [...m.views] : [];
+        if (views.length) views[views.length - 1] = date; else views.push(date);
+        patch.views = views.sort();
+        patch.seenAt = new Date(patch.views[patch.views.length - 1] + "T12:00:00").getTime();
+      }
       await save("movie", "mine", id, patch);
       return toast("Saved");
     }
