@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v49";
+const APP_VERSION = "v50";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -909,6 +909,7 @@ function card(kind, x, scope, { skip = false, label = null } = {}) {
   } else if (scope === "mine" && x.status === "want" && get(kind, "ours", id)) {
     pills.push(`<span class="pill later">Suggested</span>`);
   }
+  if (scope === "mine" && x.rewatch) pills.push(`<span class="pill later">Watch again</span>`);
   if (!label && scope === "mine" && x.status === "want" && myInterest(x) < 2) pills.push(`<span class="pill">${myInterest(x) === 1 ? "Maybe" : "No thanks"}</span>`);
   if (kind === "tv" && x.status === "want") {
     if (isLimited(x)) pills.push(`<span class="pill later">Limited series</span>`);
@@ -946,7 +947,7 @@ function card(kind, x, scope, { skip = false, label = null } = {}) {
         ${meta ? `<div class="muted small">${esc(meta)}</div>` : ""}
         ${pills.join("")}
         ${extra}
-        ${x.status === "want" || x.status === "watching" ? providerLogos(x, 3, servicesFor(scope)) : ""}
+        ${x.status === "want" || x.status === "watching" || x.rewatch ? providerLogos(x, 3, servicesFor(scope)) : ""}
       </div>
       ${quick}${skipBtn}
     </article>`;
@@ -965,7 +966,8 @@ function genreSelects(items, picked, change) {
 }
 
 // ---------- Watchlist ----------
-const myWatchlist = (kind) => list(kind, "mine").filter((x) => x.status === "want" && !oursActive(kind, x.tmdbId));
+// Your watchlist: things you want to see, and seen movies you want to watch again (rewatch)
+const myWatchlist = (kind) => list(kind, "mine").filter((x) => (x.status === "want" || x.rewatch) && !oursActive(kind, x.tmdbId));
 // Your own interest in things on your watchlist: 2 Yes please (default), 1 Maybe, 0 No thanks (hidden, never removed)
 const myInterest = (x) => x.myInterest ?? 2;
 const INTEREST_VIEWS = [["yes", "Yes please"], ["maybe", "Yes please + Maybe"], ["maybeOnly", "Maybe only"], ["no", "No thanks"]];
@@ -1109,7 +1111,7 @@ function renderPick(kind, scope) {
   }
   const svc = servicesFor(scope);
   const n = pickCandidates(kind, scope).length;
-  const results = (p.results || []).map((id) => get(kind, scope, id)).filter((x) => x && x.status === "want" && !p.skipped.has(x.tmdbId));
+  const results = (p.results || []).map((id) => get(kind, scope, id)).filter((x) => x && (x.status === "want" || x.rewatch) && !p.skipped.has(x.tmdbId));
   const chip = (key, val, label) => `<button class="chip ${p[key] === val ? "on" : ""}" data-action="pickSet" data-k="${key}" data-v="${val}">${label}</button>`;
   box.innerHTML = `
     <section class="pick card">
@@ -1224,7 +1226,7 @@ function whereLabel(kind, x, scope) {
   if (scope === "ours") return x.status === "want" ? "Our stuff" : x.status === "watching" ? "Watching together" : "Watched together";
   if (x.status === "want") return ["Watchlist · No thanks", "Watchlist · Maybe", "Watchlist"][myInterest(x)];
   if (x.status === "watching") return "Watching";
-  return x.status === "dropped" ? "Dropped" : "Watched";
+  return x.status === "dropped" ? "Dropped" : x.rewatch ? "Watched · on your watchlist again" : "Watched";
 }
 function localMatches(kind, q) {
   const seen = new Set(), out = [];
@@ -1352,6 +1354,9 @@ function renderSheet() {
         <h3>${mine.seenAt ? `You saw it ${fmtSeen(mine.seenAt)}` : "You have seen it"} <button class="btn link small" data-action="unseen">Not seen</button></h3>
         ${mine.views?.length > 1 ? `<p class="muted small">Seen ${mine.views.length} times: ${mine.views.map((d) => fmtSeen(new Date(d + "T12:00:00").getTime())).join(", ")}</p>` : ""}
         <button class="btn link small" data-action="seenAgain">＋ Seen it again today</button>
+        ${mine.rewatch
+          ? `<p class="small">On your watchlist to watch again. <button class="btn link small" data-action="rewatch" data-v="0">Remove</button></p>`
+          : `<button class="btn link small" data-action="rewatch" data-v="1">＋ Put it on my watchlist again</button>`}
         ${movieStars(mine.myRating || 0)}
         <p class="muted small">Tap a star to rate. Tap it again for half a star.</p>
         <label class="field-label" for="seenDate">${mine.views?.length > 1 ? "Date of the latest viewing" : "When did you see it?"}</label>
@@ -2394,8 +2399,11 @@ document.addEventListener("click", async (e) => {
     case "seenAgain": {
       const m = get("movie", "mine", id);
       const views = [...(m.views?.length ? m.views : m.seenAt ? [new Date(m.seenAt).toLocaleDateString("sv-SE")] : []), todayISO()];
-      return save("movie", "mine", id, { seenAt: Date.now(), views }).then(() => toast(`Seen ${views.length} times`));
+      return save("movie", "mine", id, { seenAt: Date.now(), views, rewatch: deleteField() }).then(() => toast(`Seen ${views.length} times`));
     }
+    case "rewatch":
+      return save("movie", "mine", id, { rewatch: t.dataset.v === "1" ? true : deleteField() })
+        .then(() => toast(t.dataset.v === "1" ? "On your watchlist again. Your earlier viewing is kept." : "Removed from your watchlist"));
     case "unseen": {
       // Undo a logging: back to the watchlist, and everything you logged about the viewing is removed
       const m = get("movie", "mine", id);
