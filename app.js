@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v24";
+const APP_VERSION = "v25";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -509,9 +509,12 @@ async function migrate() {
       await updateDoc(doc(db, "users", uid), { migratedSeries: true });
     } catch (err) { console.warn("Series move failed", err); }
   }
-  // Labels you no longer want
-  for (const m of list("movie", "mine").filter((x) => x.tags?.some((t) => REMOVED_TAGS.includes(t)))) {
-    updateDoc(ref("movie", "mine", m.tmdbId), { tags: m.tags.filter((t) => !REMOVED_TAGS.includes(t)) }).catch(() => {});
+  // Labels you no longer want, and festival labels shortened to "GFF 2022"
+  const fixTag = (t) => t.replace(/^Göteborg Film Festival (\d+)/, "GFF $1");
+  for (const kind of KINDS) {
+    for (const m of list(kind, "mine").filter((x) => x.tags?.some((t) => REMOVED_TAGS.includes(t) || fixTag(t) !== t))) {
+      updateDoc(ref(kind, "mine", m.tmdbId), { tags: [...new Set(m.tags.filter((t) => !REMOVED_TAGS.includes(t)).map(fixTag))] }).catch(() => {});
+    }
   }
 }
 
@@ -745,7 +748,7 @@ function renderWatchlist(kind) {
     main.innerHTML = `
       ${scopeSwitch(kind, "watchlist")}
       <div id="pick"></div>
-      <div class="searchbar"><input id="wlFilter" type="search" placeholder="Filter your watchlist…" autocomplete="off" value="${esc(f.q)}"></div>
+      <div class="searchbar"><input id="wlFilter" type="search" placeholder="Search your watchlist…" autocomplete="off" value="${esc(f.q)}"></div>
       <div id="wlControls"></div>
       <div id="wlList"></div>`;
     $("#wlFilter").oninput = (e) => { f.q = e.target.value; f.limit = 60; renderWatchlist(kind); };
@@ -768,11 +771,20 @@ function renderWatchlist(kind) {
   items = [...items].sort(by);
   const noun = (n) => `${n} ${n === 1 ? K[kind].noun : K[kind].nouns}`;
   $("#wlControls").innerHTML = `
-    <div class="chips">
-      ${svc ? `<button class="chip ${f.onServices ? "on" : ""}" data-action="onServices">On my services</button>` : ""}
-      ${SORTS.map(([k, l]) => `<button class="chip ${f.sort === k ? "on" : ""}" data-action="sort" data-k="${k}">${l}</button>`).join("")}
+    <div class="controls">
+      <div class="ctl-row">
+        <span class="ctl-label">Filter</span>
+        ${svc ? `<button class="chip ${f.onServices ? "on" : ""}" data-action="onServices">On my services</button>` : ""}
+        ${tags.length ? `<select data-change="tagFilter" aria-label="Filter by label" class="${f.tag ? "on" : ""}">
+          <option value="">All labels</option>
+          ${tags.map((tg) => `<option value="${esc(tg)}" ${f.tag === tg ? "selected" : ""}>${esc(tg)}</option>`).join("")}
+        </select>` : ""}
+      </div>
+      <div class="ctl-row">
+        <span class="ctl-label">Sort</span>
+        <select data-change="sort" aria-label="Sort">${SORTS.map(([k, l]) => `<option value="${k}" ${f.sort === k ? "selected" : ""}>${l}</option>`).join("")}</select>
+      </div>
     </div>
-    ${tags.length ? `<div class="chips tags">${tags.map((tg) => `<button class="chip small ${f.tag === tg ? "on" : ""}" data-action="tag" data-k="${esc(tg)}">${esc(tg)}</button>`).join("")}</div>` : ""}
     <p class="muted small count">${items.length === all.length ? noun(all.length) : `${items.length} of ${noun(all.length)}`}${!svc ? ` · <a href="#" data-action="menu">Pick your streaming services</a> to filter by them` : ""}</p>`;
   const shown = items.slice(0, f.limit);
   $("#wlList").innerHTML = items.length
@@ -1601,6 +1613,17 @@ async function renameTag(from, to) {
   }
   for (const k of KINDS) if (state.filters[k].tag === from) state.filters[k].tag = to || null;
 }
+
+// ---------- Dropdowns ----------
+document.addEventListener("change", (e) => {
+  const t = e.target.closest("[data-change]");
+  if (!t) return;
+  const f = state.filters[state.mode];
+  if (t.dataset.change === "sort") f.sort = t.value;
+  if (t.dataset.change === "tagFilter") f.tag = t.value || null;
+  f.limit = 60;
+  render();
+});
 
 // ---------- Clicks ----------
 document.addEventListener("click", async (e) => {
