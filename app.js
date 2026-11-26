@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v44";
+const APP_VERSION = "v45";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -1025,10 +1025,11 @@ function renderWatchlist(kind) {
 function renderOurWatchlist(kind) {
   const main = $("#main");
   main.dataset.view = `owl-${kind}`;
-  const f = state.ourFilter[kind];
+  let f = state.ourFilter[kind];
   let items = list(kind, "ours").filter((x) => x.status === "want");
   if (f === "both") items = items.filter(isOurs);
   if (f === "later") items = items.filter(isMaybeLater);
+  if (f === "pending" && !pendingVotes(kind).length) f = state.ourFilter[kind] = "all"; // all voted: show everything
   if (f === "pending") items = items.filter(awaitsMyVote);
   items.sort((a, b) => isOurs(b) - isOurs(a) || isMaybeLater(b) - isMaybeLater(a) || interestScore(b) - interestScore(a) || (b.suggestedAt || b.addedAt || 0) - (a.suggestedAt || a.addedAt || 0));
   const pending = pendingVotes(kind).length;
@@ -2064,6 +2065,14 @@ function nextGffNote() {
   return `GFF${y}#${nums.length ? Math.max(...nums) + 1 : 1}`;
 }
 
+// Where things wait for your vote: Watchlist → Our stuff → Waiting for me
+function goToPending(kind) {
+  state.tab[kind] = "watchlist";
+  localStorage.setItem(`tab-${kind}`, "watchlist");
+  state.scope[kind].watchlist = "ours";
+  state.ourFilter[kind] = "pending";
+}
+
 // ---------- Labels ----------
 // Labels (tags) belong to your own lists. They can be added per item and renamed or removed everywhere.
 const allTags = () => {
@@ -2204,9 +2213,16 @@ document.addEventListener("click", async (e) => {
       if (state.mode === t.dataset.m) return;
       state.mode = t.dataset.m;
       localStorage.setItem("mode", state.mode);
+      if (pendingVotes(state.mode).length) goToPending(state.mode); // straight to what waits for you
       window.scrollTo(0, 0);
       return renderShell();
     case "tab":
+      if (t.dataset.tab === "watchlist" && pendingVotes(state.mode).length) {
+        goToPending(state.mode);
+        $("#main").innerHTML = ""; $("#main").dataset.view = "";
+        window.scrollTo(0, 0);
+        return render();
+      }
       state.tab[state.mode] = t.dataset.tab;
       localStorage.setItem(`tab-${state.mode}`, t.dataset.tab);
       $("#main").innerHTML = "";
@@ -2216,6 +2232,7 @@ document.addEventListener("click", async (e) => {
     case "scope": {
       const tab = state.tab[state.mode] === "watched" ? "watched" : "watchlist";
       state.scope[state.mode][tab] = t.dataset.s;
+      if (tab === "watchlist" && t.dataset.s === "ours" && pendingVotes(state.mode).length) state.ourFilter[state.mode] = "pending";
       state.pick[state.mode].results = null;
       $("#main").dataset.view = "";
       return render();
