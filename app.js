@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v48";
+const APP_VERSION = "v49";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -909,7 +909,7 @@ function card(kind, x, scope, { skip = false, label = null } = {}) {
   } else if (scope === "mine" && x.status === "want" && get(kind, "ours", id)) {
     pills.push(`<span class="pill later">Suggested</span>`);
   }
-  if (scope === "mine" && x.status === "want" && myInterest(x) < 2) pills.push(`<span class="pill">${myInterest(x) === 1 ? "Maybe" : "No thanks"}</span>`);
+  if (!label && scope === "mine" && x.status === "want" && myInterest(x) < 2) pills.push(`<span class="pill">${myInterest(x) === 1 ? "Maybe" : "No thanks"}</span>`);
   if (kind === "tv" && x.status === "want") {
     if (isLimited(x)) pills.push(`<span class="pill later">Limited series</span>`);
     else if (x.ended) pills.push(`<span class="pill later">Finished</span>`);
@@ -984,29 +984,22 @@ function renderWatchlist(kind) {
   if (scope === "ours") return renderOurWatchlist(kind);
   const main = $("#main");
   const f = state.filters[kind];
-  if (!$("#wlFilter") || main.dataset.view !== `wl-${kind}`) {
+  if (!$("#wlControls") || main.dataset.view !== `wl-${kind}`) {
     main.dataset.view = `wl-${kind}`;
     main.innerHTML = `
       ${scopeSwitch(kind, "watchlist")}
       <div id="news"></div>
       <div id="pick"></div>
-      <div class="searchbar"><input id="wlFilter" type="search" placeholder="Search title, director, actor, label…" autocomplete="off" value="${esc(f.q)}"></div>
       <div id="wlControls"></div>
       <div id="wlList"></div>`;
-    $("#wlFilter").oninput = (e) => { f.q = e.target.value; f.limit = 60; renderWatchlist(kind); };
   }
   renderPick(kind, "mine");
   $("#news").innerHTML = newsBanner(kind);
   const svc = myServices();
   const all = myWatchlist(kind);
   let items = all;
-  const q = f.q.trim().toLowerCase();
-  // Search in titles, directors, creators, cast, labels and genres
-  const haystack = (x) => [titleOf(x), x.originalTitle, x.originalName, ...(x.directors || []), ...(x.creators || []),
-    ...(x.cast || []).map((c) => c.name), ...(x.tags || []), ...(x.genres || [])].filter(Boolean).join(" · ").toLowerCase();
-  if (q) items = items.filter((x) => haystack(x).includes(q));
-  else items = items.filter((x) => interestOk(x, f.interest || "yes")); // searching finds everything, also hidden ones
-  const hiddenCount = q ? 0 : all.length - all.filter((x) => interestOk(x, f.interest || "yes")).length;
+  items = items.filter((x) => interestOk(x, f.interest || "yes"));
+  const hiddenCount = all.length - items.length;
   if (f.onServices && svc) items = items.filter((x) => onServices(x, svc));
   if (f.tag) items = items.filter((x) => x.tags?.includes(f.tag));
   if (f.both) items = items.filter((x) => othersWith(kind, x.tmdbId).length && !get(kind, "ours", x.tmdbId));
@@ -1196,10 +1189,11 @@ function renderSearch(kind) {
   if (!$("#searchInput") || main.dataset.view !== `search-${kind}`) {
     main.dataset.view = `search-${kind}`;
     main.innerHTML = `
-      <div class="searchbar"><input id="searchInput" type="search" placeholder="Search ${kind === "tv" ? "series" : "movies"}…" autocomplete="off" value="${esc(s.q)}"></div>
+      <div class="searchbar"><input id="searchInput" type="search" placeholder="Search ${kind === "tv" ? "series" : "movies"}: title, director, actor, label…" autocomplete="off" value="${esc(s.q)}"></div>
       <div id="results"></div>`;
     $("#searchInput").oninput = (e) => {
       s.q = e.target.value;
+      renderResults(kind); // your own lists answer at once
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => doSearch(kind), 350);
     };
@@ -1223,14 +1217,40 @@ async function doSearch(kind) {
   } catch (err) { toast("Search failed: " + err.message); }
   s.loading = false; renderResults(kind);
 }
+// One search: everything in your lists (title, director, creator, actor, label, genre) and new things on TMDB
+const haystack = (x) => [titleOf(x), x.originalTitle, x.originalName, ...(x.directors || []), ...(x.creators || []),
+  ...(x.cast || []).map((c) => c.name), ...(x.tags || []), ...(x.genres || [])].filter(Boolean).join(" · ").toLowerCase();
+function whereLabel(kind, x, scope) {
+  if (scope === "ours") return x.status === "want" ? "Our stuff" : x.status === "watching" ? "Watching together" : "Watched together";
+  if (x.status === "want") return ["Watchlist · No thanks", "Watchlist · Maybe", "Watchlist"][myInterest(x)];
+  if (x.status === "watching") return "Watching";
+  return x.status === "dropped" ? "Dropped" : "Watched";
+}
+function localMatches(kind, q) {
+  const seen = new Set(), out = [];
+  for (const scope of ["mine", "ours"]) {
+    for (const x of list(kind, scope)) {
+      if (seen.has(x.tmdbId) || !haystack(x).includes(q)) continue;
+      seen.add(x.tmdbId);
+      out.push([x, scope]);
+    }
+  }
+  // Title matches first, then newest additions
+  return out.sort(([a], [b]) => (titleOf(b).toLowerCase().includes(q) - titleOf(a).toLowerCase().includes(q)) || (b.addedAt || 0) - (a.addedAt || 0));
+}
 function renderResults(kind) {
   const box = $("#results");
   if (!box || state.mode !== kind) return;
   const { results, trending, loading } = state.search[kind];
-  const items = results ?? trending;
-  if ((loading && !results) || !items) { box.innerHTML = `<div class="splash small"><div class="spinner"></div></div>`; return; }
-  if (!items.length) { box.innerHTML = `<p class="empty">No results.</p>`; return; }
-  box.innerHTML = `${results ? "" : `<h2 class="section">Popular this week</h2>`}
+  const q = state.search[kind].q.trim().toLowerCase();
+  const local = q.length >= 2 ? localMatches(kind, q) : [];
+  const localHtml = local.length ? `<h2 class="section">In your lists (${local.length})</h2>
+    <div class="list">${local.slice(0, 40).map(([x, scope]) => card(kind, x, scope, { label: `<span class="pill later">${esc(whereLabel(kind, x, scope))}</span>` })).join("")}</div>
+    ${local.length > 40 ? `<p class="muted small">Showing 40 of ${local.length}. Type more to narrow it down.</p>` : ""}` : "";
+  const items = (results ?? trending)?.filter((r) => !(q && (get(kind, "mine", r.id) || get(kind, "ours", r.id))));
+  if ((loading && !results) || !items) { box.innerHTML = localHtml + `<div class="splash small"><div class="spinner"></div></div>`; return; }
+  if (!items.length) { box.innerHTML = localHtml || `<p class="empty">No results.</p>`; return; }
+  box.innerHTML = `${localHtml}${results ? `<h2 class="section">On TMDB</h2>` : `<h2 class="section">Popular this week</h2>`}
     <div class="list">${items.slice(0, 20).map((r) => {
       const have = get(kind, "mine", r.id) || get(kind, "ours", r.id);
       return `
