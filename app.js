@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v16";
+const APP_VERSION = "v17";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -258,6 +258,20 @@ const state = {
   preview: null, // show data for a search result that is not in the list
   sheetSeason: null,
   search: { q: "", results: null, trending: null, loading: false },
+  // Movies
+  mode: localStorage.getItem("mode") || "series",
+  mtab: localStorage.getItem("mtab") || "watchlist",
+  movies: [], // my own watchlist and seen log
+  shared: [], // movies suggested to watch together
+  moviesLoaded: false,
+  moviesError: null,
+  mf: { q: "", onServices: false, sort: "added", limit: 60 },
+  pick: { open: false, time: "any", mood: "any", onServices: true, results: null, skipped: new Set() },
+  togetherFilter: "all",
+  seenLimit: 60,
+  msearch: { q: "", results: null, trending: null, loading: false },
+  openMovieId: null,
+  moviePreview: null,
 };
 const showById = (id) => state.shows.find((s) => String(s.tmdbId) === String(id));
 const members = () => Object.entries(state.users).map(([uid, u]) => ({ uid, name: u.name || "?" }))
@@ -288,7 +302,7 @@ function renderLogin(error = "") {
     <div class="center-page">
       <div class="logo">📺</div>
       <h1>What are we watching now?</h1>
-      <p class="muted">Your shared list of TV shows</p>
+      <p class="muted">Series and movies to watch</p>
       <button class="btn google" data-action="login">
         <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
         Sign in with Google
@@ -323,6 +337,18 @@ function startListening() {
     render();
     if (!refreshedThisSession) { refreshedThisSession = true; refreshStale(); }
   }, renderNoAccess));
+  const moviesFailed = (err) => { state.moviesError = err; state.moviesLoaded = true; render(); };
+  unsubs.push(onSnapshot(collection(db, "users", state.user.uid, "movies"), (snap) => {
+    state.movies = snap.docs.map((d) => d.data());
+    state.moviesLoaded = true;
+    state.moviesError = null;
+    render();
+    if (!refreshedMovies) { refreshedMovies = true; refreshStaleMovies(); }
+  }, moviesFailed));
+  unsubs.push(onSnapshot(collection(db, "sharedMovies"), (snap) => {
+    state.shared = snap.docs.map((d) => d.data());
+    render();
+  }, moviesFailed));
   renderShell();
 }
 
@@ -373,15 +399,25 @@ function advance(id) {
 }
 
 // ---------- Main view ----------
+const TABS = {
+  series: [["want", "🍿", "List"], ["watching", "▶️", "Watching"], ["done", "✅", "Watched"], ["search", "🔍", "Search"]],
+  movies: [["watchlist", "🎬", "Watchlist"], ["together", "👥", "Together"], ["seen", "✅", "Seen"], ["search", "🔍", "Search"]],
+};
 function renderShell() {
   $("#app").innerHTML = `
     <header class="top">
-      <h1>📺 What are we watching now?</h1>
-      <button class="avatar" data-action="menu" aria-label="Menu">${esc((myName() || "?").slice(0, 1).toUpperCase())}</button>
+      <div class="top-row">
+        <h1>What are we watching now?</h1>
+        <button class="avatar" data-action="menu" aria-label="Menu">${esc((myName() || "?").slice(0, 1).toUpperCase())}</button>
+      </div>
+      <div class="modes">
+        <button data-action="mode" data-m="series">📺 Series <span class="chip-count" data-mbadge="series"></span></button>
+        <button data-action="mode" data-m="movies">🎬 Movies <span class="chip-count" data-mbadge="movies"></span></button>
+      </div>
     </header>
     <main id="main"></main>
     <nav class="tabs">
-      ${[["want", "🍿", "List"], ["watching", "▶️", "Watching"], ["done", "✅", "Watched"], ["search", "🔍", "Search"]]
+      ${TABS[state.mode]
         .map(([k, i, l]) => `<button data-action="tab" data-tab="${k}"><span class="ti">${i}</span><span>${l}</span><span class="badge" data-badge="${k}"></span></button>`).join("")}
     </nav>`;
   render();
@@ -391,15 +427,23 @@ function render() {
   if (!$("#main")) return;
   const av = $(".avatar");
   if (av) av.textContent = (myName() || "?").slice(0, 1).toUpperCase();
-  document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab));
-  // Badge the List tab when there are shows you have not voted on
+  const movies = state.mode === "movies";
+  const activeTab = movies ? state.mtab : state.tab;
+  document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === activeTab));
+  document.querySelectorAll(".modes button").forEach((b) => b.classList.toggle("on", b.dataset.m === state.mode));
+  // Badges for things waiting for your vote
   const pending = myPending().length;
-  const badge = document.querySelector('[data-badge="want"]');
-  if (badge) { badge.textContent = pending || ""; badge.hidden = !pending; }
+  const pendingMovies = myPendingMovies().length;
+  const setBadge = (el, n) => { if (el) { el.textContent = n || ""; el.hidden = !n; } };
+  setBadge(document.querySelector('[data-badge="want"]'), pending);
+  setBadge(document.querySelector('[data-badge="together"]'), pendingMovies);
+  setBadge(document.querySelector('[data-mbadge="series"]'), movies ? pending : 0);
+  setBadge(document.querySelector('[data-mbadge="movies"]'), movies ? 0 : pendingMovies);
 
-  if (state.tab === "search") renderSearch();
+  if (movies) renderMovies();
+  else if (state.tab === "search") renderSearch();
   else renderList();
-  if (state.openId) renderSheet();
+  if (state.openId || state.openMovieId) renderSheet();
   renderSettings();
 }
 
@@ -409,15 +453,14 @@ function ourServices() {
   const ids = new Set(Object.values(state.users).flatMap((u) => u.services || []));
   return ids.size ? ids : null;
 }
-function splitProviders(show) {
+function splitProviders(show, mine = ourServices()) {
   const all = show.providers?.stream || [];
-  const mine = ourServices();
   if (!mine) return { ours: all, others: [] };
   return { ours: all.filter((p) => mine.has(p.id)), others: all.filter((p) => !mine.has(p.id)) };
 }
 
-function providerLogos(show, max = 3) {
-  const p = splitProviders(show).ours;
+function providerLogos(show, max = 3, services = ourServices()) {
+  const p = splitProviders(show, services).ours;
   if (!p.length) return "";
   return `<div class="logos">${p.slice(0, max).filter((x) => x.logo).map((x) => `<img src="${img(x.logo, "w92")}" alt="${esc(x.name)}" title="${esc(x.name)}">`).join("")}${p.length > max ? `<span class="more">+${p.length - max}</span>` : ""}</div>`;
 }
@@ -601,18 +644,21 @@ function openSheet(id) {
 function closeSheet() {
   state.openId = null;
   state.preview = null;
+  state.openMovieId = null;
+  state.moviePreview = null;
   $("#sheet").hidden = true;
   $("#sheet").innerHTML = "";
   document.body.classList.remove("noscroll");
 }
 window.addEventListener("popstate", () => {
   if (settingsOpen) closeSettings();
-  else if (state.openId) closeSheet();
+  else if (state.openId || state.openMovieId) closeSheet();
 });
 
 // ---------- Settings ----------
 let settingsOpen = false;
 let allServices = null; // every streaming service in the region, from TMDB
+let svcQuery = "";
 
 function openSettings() {
   settingsOpen = true;
@@ -621,10 +667,13 @@ function openSettings() {
   document.body.classList.add("noscroll");
   renderSettings();
   if (!allServices) {
-    tmdb("/watch/providers/tv", { watch_region: CONFIG.region })
-      .then((d) => {
-        allServices = (d.results || [])
+    // Services for series and for movies differ a little (e.g. film-only services), so combine both lists.
+    Promise.all(["tv", "movie"].map((k) => tmdb(`/watch/providers/${k}`, { watch_region: CONFIG.region })))
+      .then((lists) => {
+        const seen = new Set();
+        allServices = lists.flatMap((d) => d.results || [])
           .sort((a, b) => (a.display_priorities?.[CONFIG.region] ?? a.display_priority) - (b.display_priorities?.[CONFIG.region] ?? b.display_priority))
+          .filter((p) => !seen.has(p.provider_id) && seen.add(p.provider_id))
           .map((p) => ({ id: p.provider_id, name: p.provider_name, logo: p.logo_path }));
         renderSettings();
       })
@@ -635,50 +684,58 @@ function closeSettings() {
   settingsOpen = false;
   $("#settings").hidden = true;
   $("#settings").innerHTML = "";
-  if (!state.openId) document.body.classList.remove("noscroll");
+  svcQuery = "";
+  if (!state.openId && !state.openMovieId) document.body.classList.remove("noscroll");
 }
 
 function renderSettings() {
   if (!settingsOpen) return;
   const el = $("#settings");
-  const scroll = el.scrollTop;
+  if (!$("#svcFilter")) {
+    el.innerHTML = `
+      <div class="sheet-inner">
+        <header class="settings-top">
+          <button class="close static" data-action="close" aria-label="Close">←</button>
+          <h2>Settings</h2>
+        </header>
+        <div class="sheet-body flat">
+          <section id="acct"></section>
+          <section>
+            <h3>Your streaming services</h3>
+            <p class="muted small">Pick the services you have. Series show the services that any of you has. Movies in your own watchlist show only yours. Services you have not picked are listed under "Also on". Pick none to show all.</p>
+            <div id="svcOthers"></div>
+            <input id="svcFilter" type="search" placeholder="Find a service…" autocomplete="off">
+            <div id="svcList"></div>
+          </section>
+        </div>
+      </div>`;
+    $("#svcFilter").oninput = (e) => { svcQuery = e.target.value; renderSettings(); };
+  }
   const mine = new Set(state.users[state.user.uid]?.services || []);
   const others = members().filter((m) => m.uid !== state.user.uid);
+  $("#acct").innerHTML = `
+    <h3>Account</h3>
+    <p>Signed in as <b>${esc(myName())}</b> <span class="muted">(${esc(state.user.email)})</span></p>
+    <p class="muted small">The series list is shared by ${esc(members().map((m) => m.name).join(" & "))} · App version ${APP_VERSION}</p>
+    <button class="btn danger wide" data-action="logout">Sign out</button>`;
+  $("#svcOthers").innerHTML = others.map((m) => {
+    const theirs = (state.users[m.uid]?.services || []).map((id) => allServices?.find((p) => p.id === id)?.name).filter(Boolean);
+    return theirs.length ? `<p class="muted small">${esc(m.name)} has: ${esc(theirs.join(", "))}</p>` : "";
+  }).join("");
   const serviceBtn = (p) => `
     <button class="svc ${mine.has(p.id) ? "on" : ""}" data-action="toggleService" data-pid="${p.id}">
       ${p.logo ? `<img src="${img(p.logo, "w92")}" alt="">` : `<span class="nologo"></span>`}
       <span>${esc(p.name)}</span>
       <span class="check">${mine.has(p.id) ? "✓" : ""}</span>
     </button>`;
-  const picked = (allServices || []).filter((p) => mine.has(p.id));
-  const rest = (allServices || []).filter((p) => !mine.has(p.id));
-  el.innerHTML = `
-    <div class="sheet-inner">
-      <header class="settings-top">
-        <button class="close static" data-action="close" aria-label="Close">←</button>
-        <h2>Settings</h2>
-      </header>
-      <div class="sheet-body flat">
-        <section>
-          <h3>Account</h3>
-          <p>Signed in as <b>${esc(myName())}</b> <span class="muted">(${esc(state.user.email)})</span></p>
-          <p class="muted small">The list is shared by ${esc(members().map((m) => m.name).join(" & "))} · App version ${APP_VERSION}</p>
-          <button class="btn danger wide" data-action="logout">Sign out</button>
-        </section>
-        <section>
-          <h3>Your streaming services</h3>
-          <p class="muted small">Pick the services you have. The app shows the services ${others.length ? "either of you has" : "you have"}, and lists the rest under "Also on". Pick none to show all.</p>
-          ${others.map((m) => {
-            const theirs = (state.users[m.uid]?.services || []).map((id) => allServices?.find((p) => p.id === id)?.name).filter(Boolean);
-            return theirs.length ? `<p class="muted small">${esc(m.name)} has: ${esc(theirs.join(", "))}</p>` : "";
-          }).join("")}
-          ${!allServices ? `<div class="splash small"><div class="spinner"></div></div>` : `
-            ${picked.length ? `<div class="svc-list">${picked.map(serviceBtn).join("")}</div><h4 class="muted small">All services in Sweden</h4>` : ""}
-            <div class="svc-list">${rest.map(serviceBtn).join("")}</div>`}
-        </section>
-      </div>
-    </div>`;
-  el.scrollTop = scroll;
+  const q = svcQuery.trim().toLowerCase();
+  const list = (allServices || []).filter((p) => !q || p.name.toLowerCase().includes(q));
+  const picked = list.filter((p) => mine.has(p.id));
+  const rest = list.filter((p) => !mine.has(p.id));
+  $("#svcList").innerHTML = !allServices ? `<div class="splash small"><div class="spinner"></div></div>` : `
+    ${picked.length ? `<h4 class="muted small">Your services (${mine.size})</h4><div class="svc-list">${picked.map(serviceBtn).join("")}</div>` : ""}
+    ${rest.length ? `<h4 class="muted small">${q ? "Matching services" : "All services in Sweden"}</h4><div class="svc-list">${rest.map(serviceBtn).join("")}</div>` : ""}
+    ${!list.length ? `<p class="muted">No service matches “${esc(svcQuery)}”.</p>` : ""}`;
 }
 
 function sheetHeader(show) {
@@ -700,13 +757,13 @@ function sheetHeader(show) {
         </div>`;
 }
 
-function providersSection(show) {
+function providersSection(show, services = ourServices(), title = "Where can we watch it?") {
   const prov = show.providers || {};
-  const { ours, others } = splitProviders(show);
-  const filtered = !!ourServices();
+  const { ours, others } = splitProviders(show, services);
+  const filtered = !!services;
   return `
         <section>
-          <h3>Where can we watch it?</h3>
+          <h3>${title}</h3>
           ${ours.length
             ? `<div class="providers">${ours.map((p) => `<div class="prov">${p.logo ? `<img src="${img(p.logo, "w92")}" alt="">` : ""}<span>${esc(p.name)}</span></div>`).join("")}</div>`
             : filtered && others.length
@@ -737,11 +794,11 @@ function aboutSection(show) {
         ${show.nextAir ? `<p class="muted small">Next episode (${epLabel(show.nextAir)}) airs ${fmtDate(show.nextAir.date)}.</p>` : ""}`;
 }
 
-function castSection(show) {
+function castSection(show, kind = "tv") {
   if (!show.cast?.length) return "";
   return `
         <section>
-          <h3>Cast <a class="small" href="https://www.themoviedb.org/tv/${show.tmdbId}/cast" target="_blank" rel="noopener">Full cast ↗</a></h3>
+          <h3>Cast <a class="small" href="https://www.themoviedb.org/${kind}/${show.tmdbId}/cast" target="_blank" rel="noopener">Full cast ↗</a></h3>
           <div class="cast">${show.cast.map((c) => `
             <a class="person" href="https://www.themoviedb.org/person/${c.id}" target="_blank" rel="noopener">
               <div class="face">${c.profile ? `<img loading="lazy" src="${img(c.profile, "w185")}" alt="">` : esc(c.name.slice(0, 1))}</div>
@@ -766,6 +823,7 @@ function renderPreview(el, show) {
 
 function renderSheet() {
   const el = $("#sheet");
+  if (state.openMovieId) return renderMovieSheet(el);
   const listed = showById(state.openId);
   const show = listed || (String(state.preview?.tmdbId) === state.openId ? state.preview : null);
   if (!show) {
@@ -834,13 +892,511 @@ function renderSheet() {
     </div>`;
 }
 
+// ---------- Movies ----------
+// Your own watchlist and log live in users/{uid}/movies (private to you).
+// Movies you suggest to watch together are copied to sharedMovies, where everyone votes with thumbs.
+const MOVIE_DATA_V = 1;
+const MOODS = {
+  light: { label: "Light & fun", genres: ["Comedy", "Animation", "Family", "Romance", "Music"] },
+  tense: { label: "Tense", genres: ["Thriller", "Horror", "Crime", "Mystery"] },
+  epic: { label: "Big & epic", genres: ["Action", "Adventure", "Science Fiction", "Fantasy", "War", "Western"] },
+  deep: { label: "Deep", genres: ["Drama", "History", "Documentary"] },
+};
+const TIMES = [["any", "Any length"], ["105", "Under 1 h 45"], ["135", "Under 2 h 15"]];
+const SORTS = [["added", "Recently added"], ["short", "Shortest"], ["rating", "Highest rated"], ["title", "A–Z"]];
+const PERSONAL_FIELDS = ["status", "addedAt", "seenAt", "myRating", "suggested"];
+
+async function fetchMovieData(id) {
+  const d = await tmdb(`/movie/${id}`, { append_to_response: "watch/providers,credits,videos" });
+  let overview = d.overview;
+  if (!overview) {
+    try { overview = (await tmdb(`/movie/${id}`, { language: "en-US" })).overview; } catch {}
+  }
+  const wp = d["watch/providers"]?.results?.[CONFIG.region] || {};
+  const vids = (d.videos?.results || []).filter((v) => v.site === "YouTube");
+  const trailer = vids.find((v) => v.type === "Trailer" && v.official) || vids.find((v) => v.type === "Trailer") || vids.find((v) => v.type === "Teaser");
+  return {
+    tmdbId: d.id,
+    title: d.title || "",
+    originalTitle: d.original_title && d.original_title !== d.title ? d.original_title : null,
+    poster: d.poster_path || null,
+    backdrop: d.backdrop_path || null,
+    overview: overview || "",
+    year: (d.release_date || "").slice(0, 4),
+    releaseDate: d.release_date || null,
+    runtime: d.runtime || null,
+    genres: (d.genres || []).map((g) => g.name),
+    rating: d.vote_average ? Math.round(d.vote_average * 10) / 10 : null,
+    directors: (d.credits?.crew || []).filter((c) => c.job === "Director").map((c) => c.name),
+    cast: (d.credits?.cast || []).slice(0, 12).map((c) => ({
+      id: c.id, name: c.name, profile: c.profile_path || null, character: c.character || "",
+    })),
+    imdbId: d.imdb_id || null,
+    trailer: trailer?.key || null,
+    providers: {
+      stream: providerList(wp.flatrate, wp.free, wp.ads),
+      rent: providerList(wp.rent, wp.buy),
+      link: wp.link || null,
+    },
+    lang: CONFIG.language,
+    dataV: MOVIE_DATA_V,
+    fetchedAt: Date.now(),
+  };
+}
+const movieNeedsRefresh = (m, maxAge) => Date.now() - (m.fetchedAt || 0) > maxAge || m.lang !== CONFIG.language || m.dataV !== MOVIE_DATA_V;
+const movieOnly = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !PERSONAL_FIELDS.includes(k) && k !== "interest" && !k.startsWith("suggested")));
+
+const myMovieRef = (id) => doc(db, "users", state.user.uid, "movies", String(id));
+const sharedRef = (id) => doc(db, "sharedMovies", String(id));
+const myMovie = (id) => state.movies.find((m) => String(m.tmdbId) === String(id));
+const sharedMovie = (id) => state.shared.find((m) => String(m.tmdbId) === String(id));
+const myServices = () => { const s = state.users[state.user?.uid]?.services || []; return s.length ? new Set(s) : null; };
+const onServices = (m, set) => (m.providers?.stream || []).some((p) => set.has(p.id));
+const otherNames = () => members().filter((m) => m.uid !== state.user.uid).map((m) => m.name).join(" & ");
+const myPendingMovies = () => state.shared.filter((m) => m.status === "want" && awaitsMyVote(m));
+
+// Letterboxd-style stars: 3.5 -> ★★★½
+const starText = (r) => (r ? "★".repeat(Math.floor(r)) + (r % 1 ? "½" : "") : "");
+
+function saveMovie(ref, patch) {
+  return updateDoc(ref, patch).catch((err) => toast("Could not save: " + err.message));
+}
+
+let refreshedMovies = false;
+// Streaming availability changes, so refresh watchlist movies about once a week (a few per start).
+async function refreshStaleMovies() {
+  const stale = state.movies.filter((m) => m.status === "want" && movieNeedsRefresh(m, 7 * DAY));
+  for (const m of stale.slice(0, 25)) {
+    try { await updateDoc(myMovieRef(m.tmdbId), await fetchMovieData(m.tmdbId)); } catch {}
+  }
+}
+
+async function addMovie(id) {
+  if (myMovie(id)) return toast("Already in your watchlist");
+  try {
+    const data = await fetchMovieData(id);
+    await setDoc(myMovieRef(id), { ...data, status: "want", addedAt: Date.now() });
+    toast(`${data.title} added to your watchlist`);
+  } catch (err) { toast("Could not add: " + err.message); }
+}
+
+// ----- Movie views -----
+function renderMovies() {
+  const main = $("#main");
+  if (!state.moviesLoaded) { main.innerHTML = `<div class="splash"><div class="spinner"></div></div>`; return; }
+  if (state.moviesError) {
+    main.innerHTML = `<div class="notice">
+      <h3>Movies need a database update</h3>
+      <p>The database rules in Firebase have to be updated before movies can be saved. Follow the steps Claude gave you for <b>Firebase → Firestore → Rules</b>, then reload the app.</p>
+      <p class="muted small">${esc(state.moviesError.code || state.moviesError.message || "")}</p>
+    </div>`;
+    return;
+  }
+  if (state.mtab === "search") return renderMovieSearch();
+  if (state.mtab === "together") return renderTogether();
+  if (state.mtab === "seen") return renderSeen();
+  return renderWatchlist();
+}
+
+function movieCard(m, { shared = false, skip = false } = {}) {
+  const meta = [m.runtime && fmtDuration(m.runtime), m.directors?.[0], m.rating && `★ ${m.rating}`].filter(Boolean).join(" · ");
+  let extra = "";
+  if (shared) {
+    extra = m.status === "seen"
+      ? `<div class="muted small">Watched together ${fmtDate(m.seenAt)}</div>`
+      : `${isOurs(m) ? `<span class="pill good">Watch together</span>` : ""}${isMaybeLater(m) ? `<span class="pill later">Maybe later</span>` : ""}${awaitsMyVote(m) ? `<span class="pill ask">Waiting for your vote</span>` : ""}${interestRow(m)}`;
+  } else if (m.status === "seen") {
+    extra = `<div class="small">${m.myRating ? `<span class="stars">${starText(m.myRating)}</span> ` : ""}<span class="muted">Seen ${fmtDate(m.seenAt)}</span></div>`;
+  } else if (sharedMovie(m.tmdbId)) {
+    extra = `<span class="pill later">Suggested to watch together</span>`;
+  }
+  return `
+    <article class="card show" data-action="mv-open" data-id="${m.tmdbId}">
+      <div class="poster">${m.poster ? `<img loading="lazy" src="${img(m.poster, "w185")}" alt="">` : "🎬"}</div>
+      <div class="info">
+        <h3>${esc(m.title)} <span class="muted year">${esc(m.year)}</span></h3>
+        ${meta ? `<div class="muted small">${esc(meta)}</div>` : ""}
+        ${extra}
+        ${providerLogos(m, 3, shared ? ourServices() : myServices())}
+      </div>
+      ${skip ? `<button class="quick ghost" data-action="mv-skip" data-id="${m.tmdbId}" aria-label="Not tonight" title="Not tonight">✕</button>` : ""}
+    </article>`;
+}
+
+function renderWatchlist() {
+  const main = $("#main");
+  if (!$("#wlFilter")) {
+    main.innerHTML = `
+      <div id="pick"></div>
+      <div class="searchbar"><input id="wlFilter" type="search" placeholder="Filter your watchlist…" autocomplete="off" value="${esc(state.mf.q)}"></div>
+      <div id="wlControls"></div>
+      <div id="wlList"></div>`;
+    $("#wlFilter").oninput = (e) => { state.mf.q = e.target.value; state.mf.limit = 60; renderWatchlist(); };
+  }
+  renderPick();
+  const f = state.mf;
+  const svc = myServices();
+  const all = state.movies.filter((m) => m.status === "want");
+  let list = all;
+  const q = f.q.trim().toLowerCase();
+  if (q) list = list.filter((m) => [m.title, m.originalTitle, ...(m.directors || [])].filter(Boolean).join(" ").toLowerCase().includes(q));
+  if (f.onServices && svc) list = list.filter((m) => onServices(m, svc));
+  const by = {
+    added: (a, b) => (b.addedAt || 0) - (a.addedAt || 0),
+    short: (a, b) => (a.runtime || 999) - (b.runtime || 999),
+    rating: (a, b) => (b.rating || 0) - (a.rating || 0),
+    title: (a, b) => a.title.localeCompare(b.title),
+  }[f.sort];
+  list = [...list].sort(by);
+
+  $("#wlControls").innerHTML = `
+    <div class="chips">
+      ${svc ? `<button class="chip ${f.onServices ? "on" : ""}" data-action="mv-onServices">On my services</button>` : ""}
+      ${SORTS.map(([k, l]) => `<button class="chip ${f.sort === k ? "on" : ""}" data-action="mv-sort" data-k="${k}">${l}</button>`).join("")}
+    </div>
+    <p class="muted small count">${list.length === all.length ? `${all.length} movie${all.length === 1 ? "" : "s"}` : `${list.length} of ${all.length} movies`}${!svc ? ` · <a href="#" data-action="menu">Pick your streaming services</a> to filter by them` : ""}</p>`;
+  const shown = list.slice(0, f.limit);
+  $("#wlList").innerHTML = list.length
+    ? `<div class="list">${shown.map((m) => movieCard(m)).join("")}</div>
+       ${list.length > shown.length ? `<button class="btn wide" data-action="mv-more">Show more (${list.length - shown.length} left)</button>` : ""}`
+    : `<p class="empty">${all.length ? "No movies match." : "Your watchlist is empty. Tap <b>Search</b> to add movies."}</p>`;
+}
+
+// ----- "Help me pick" -----
+function pickCandidates() {
+  const p = state.pick;
+  const svc = myServices();
+  return state.movies.filter((m) => {
+    if (m.status !== "want" || p.skipped.has(m.tmdbId)) return false;
+    if (p.time !== "any" && !(m.runtime && m.runtime <= Number(p.time))) return false;
+    if (p.mood !== "any" && !(m.genres || []).some((g) => MOODS[p.mood].genres.includes(g))) return false;
+    if (p.onServices && svc && !onServices(m, svc)) return false;
+    return true;
+  });
+}
+function doPick() {
+  const c = pickCandidates();
+  for (let i = c.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [c[i], c[j]] = [c[j], c[i]]; }
+  state.pick.results = c.slice(0, 3).map((m) => m.tmdbId);
+}
+function renderPick() {
+  const box = $("#pick");
+  if (!box) return;
+  const p = state.pick;
+  if (!p.open) {
+    box.innerHTML = `<button class="btn primary wide pickbtn" data-action="mv-pickOpen">🎲 Help me pick a movie</button>`;
+    return;
+  }
+  const svc = myServices();
+  const n = pickCandidates().length;
+  const results = (p.results || []).map((id) => myMovie(id)).filter((m) => m && m.status === "want" && !p.skipped.has(m.tmdbId));
+  const chip = (key, val, label) => `<button class="chip ${p[key] === val ? "on" : ""}" data-action="mv-pickSet" data-k="${key}" data-v="${val}">${label}</button>`;
+  box.innerHTML = `
+    <section class="pick card">
+      <h3>Help me pick <button class="btn link small" data-action="mv-pickClose">Close</button></h3>
+      <div class="pick-label">How much time?</div>
+      <div class="chips">${TIMES.map(([v, l]) => chip("time", v, l)).join("")}</div>
+      <div class="pick-label">What mood?</div>
+      <div class="chips">${chip("mood", "any", "Anything")}${Object.entries(MOODS).map(([k, m]) => chip("mood", k, m.label)).join("")}</div>
+      ${svc ? `<div class="chips"><button class="chip ${p.onServices ? "on" : ""}" data-action="mv-pickServices">Only on my services</button></div>` : ""}
+      <button class="btn primary wide" data-action="mv-pick" ${n ? "" : "disabled"}>${results.length ? "🎲 Pick again" : "🎲 Pick 3 movies"}</button>
+      <p class="muted small">${n} movie${n === 1 ? "" : "s"} match${n === 1 ? "es" : ""}.${p.skipped.size ? ` ${p.skipped.size} skipped tonight · <a href="#" data-action="mv-unskip">bring back</a>` : ""}</p>
+      ${results.length ? `<div class="list">${results.map((m) => movieCard(m, { skip: true })).join("")}</div><p class="muted small">Tap ✕ for “not tonight”.</p>` : ""}
+    </section>`;
+}
+
+// ----- Together -----
+function renderTogether() {
+  const main = $("#main");
+  const f = state.togetherFilter;
+  let list = state.shared.filter((m) => (f === "seen" ? m.status === "seen" : m.status !== "seen"));
+  if (f === "both") list = list.filter(isOurs);
+  if (f === "later") list = list.filter(isMaybeLater);
+  if (f === "pending") list = list.filter(awaitsMyVote);
+  if (f === "seen") list.sort((a, b) => (b.seenAt || 0) - (a.seenAt || 0));
+  else list.sort((a, b) => isOurs(b) - isOurs(a) || isMaybeLater(b) - isMaybeLater(a) || interestScore(b) - interestScore(a) || (b.suggestedAt || 0) - (a.suggestedAt || 0));
+  const pending = myPendingMovies().length;
+  const chips = [["all", "All"], ["both", "Watch together"], ["later", "Maybe later"], ["pending", "Waiting for me"], ["seen", "Watched"]]
+    .map(([k, l]) => `<button class="chip ${f === k ? "on" : ""}" data-action="mv-tFilter" data-f="${k}">${l}${k === "pending" && pending ? ` <span class="chip-count">${pending}</span>` : ""}</button>`).join("");
+  const empty = f === "all"
+    ? "Nothing suggested yet. Open a movie in your watchlist and tap <b>Suggest to watch together</b>. Only the movies you suggest are shared."
+    : f === "seen" ? "Movies you watch together end up here." : "No movies match this filter.";
+  main.innerHTML = `<div class="chips">${chips}</div>`
+    + (list.length ? `<div class="list">${list.map((m) => movieCard(m, { shared: true })).join("")}</div>` : `<p class="empty">${empty}</p>`);
+}
+
+// ----- Seen -----
+function renderSeen() {
+  const main = $("#main");
+  const list = state.movies.filter((m) => m.status === "seen").sort((a, b) => (b.seenAt || 0) - (a.seenAt || 0));
+  const year = new Date().getFullYear();
+  const thisYear = list.filter((m) => new Date(m.seenAt).getFullYear() === year).length;
+  main.innerHTML = list.length
+    ? `<p class="muted small count">${list.length} movie${list.length === 1 ? "" : "s"} seen · ${thisYear} in ${year}</p>
+       <div class="list">${list.slice(0, state.seenLimit).map((m) => movieCard(m)).join("")}</div>
+       ${list.length > state.seenLimit ? `<button class="btn wide" data-action="mv-seenMore">Show more</button>` : ""}`
+    : `<p class="empty">Movies you have seen end up here. Open a movie and tap <b>Mark as seen</b>.</p>`;
+}
+
+// ----- Search -----
+let movieSearchTimer;
+function renderMovieSearch() {
+  const main = $("#main");
+  if (!$("#mSearchInput")) {
+    main.innerHTML = `
+      <div class="searchbar"><input id="mSearchInput" type="search" placeholder="Search movies…" autocomplete="off" value="${esc(state.msearch.q)}"></div>
+      <div id="mResults"></div>`;
+    $("#mSearchInput").oninput = (e) => {
+      state.msearch.q = e.target.value;
+      clearTimeout(movieSearchTimer);
+      movieSearchTimer = setTimeout(doMovieSearch, 350);
+    };
+    if (!state.msearch.trending) {
+      tmdb("/trending/movie/week")
+        .then((d) => { state.msearch.trending = d.results || []; renderMovieResults(); })
+        .catch((err) => { const b = $("#mResults"); if (b) b.innerHTML = `<p class="error">Could not reach TMDB (${esc(err.message)}).</p>`; });
+    }
+  }
+  renderMovieResults();
+}
+async function doMovieSearch() {
+  const q = state.msearch.q.trim();
+  if (!q) { state.msearch.results = null; return renderMovieResults(); }
+  state.msearch.loading = true; renderMovieResults();
+  try {
+    const d = await tmdb("/search/movie", { query: q, include_adult: "false" });
+    if (q !== state.msearch.q.trim()) return;
+    state.msearch.results = d.results || [];
+  } catch (err) { toast("Search failed: " + err.message); }
+  state.msearch.loading = false; renderMovieResults();
+}
+function renderMovieResults() {
+  const box = $("#mResults");
+  if (!box) return;
+  const { results, trending, loading } = state.msearch;
+  const items = results ?? trending;
+  if ((loading && !results) || !items) { box.innerHTML = `<div class="splash small"><div class="spinner"></div></div>`; return; }
+  if (!items.length) { box.innerHTML = `<p class="empty">No results.</p>`; return; }
+  box.innerHTML = `${results ? "" : `<h2 class="section">Popular this week</h2>`}
+    <div class="list">${items.slice(0, 20).map((r) => {
+      const have = myMovie(r.id);
+      return `
+      <article class="card show result" data-action="mv-open" data-id="${r.id}">
+        <div class="poster">${r.poster_path ? `<img loading="lazy" src="${img(r.poster_path, "w185")}" alt="">` : "🎬"}</div>
+        <div class="info">
+          <h3>${esc(r.title)} <span class="muted year">${esc((r.release_date || "").slice(0, 4))}</span></h3>
+          <p class="overview clamp">${esc(r.overview || "")}</p>
+        </div>
+        ${have
+          ? `<button class="add done" data-action="mv-open" data-id="${r.id}" aria-label="Show">✓</button>`
+          : `<button class="add" data-action="mv-add" data-id="${r.id}" aria-label="Add to watchlist">＋</button>`}
+      </article>`;
+    }).join("")}</div>
+    <p class="attribution">Movie data from TMDB. Streaming info from JustWatch.</p>`;
+}
+
+// ----- Movie detail sheet -----
+function openMovie(id) {
+  state.openMovieId = String(id);
+  state.moviePreview = null;
+  history.pushState({ movie: id }, "");
+  $("#sheet").hidden = false;
+  document.body.classList.add("noscroll");
+  renderSheet();
+  $("#sheet").scrollTop = 0;
+  const mine = myMovie(id), shared = sharedMovie(id);
+  if (mine && movieNeedsRefresh(mine, 3 * DAY)) fetchMovieData(id).then((d) => updateDoc(myMovieRef(id), d)).catch(() => {});
+  if (shared && movieNeedsRefresh(shared, 3 * DAY)) fetchMovieData(id).then((d) => updateDoc(sharedRef(id), d)).catch(() => {});
+  if (!mine && !shared) {
+    fetchMovieData(id)
+      .then((d) => { if (state.openMovieId === String(id)) { state.moviePreview = d; renderSheet(); } })
+      .catch((err) => { toast("Could not load the movie: " + err.message); if (state.openMovieId === String(id)) history.back(); });
+  }
+}
+
+function movieStars(r) {
+  return `<div class="rate">${[1, 2, 3, 4, 5].map((n) => {
+    const cls = r >= n ? "full" : r >= n - 0.5 ? "half" : "";
+    return `<button class="star ${cls}" data-action="mv-rate" data-n="${n}" aria-label="${n} stars">★</button>`;
+  }).join("")}</div>`;
+}
+
+function renderMovieSheet(el) {
+  const id = state.openMovieId;
+  const mine = myMovie(id), shared = sharedMovie(id);
+  const m = mine || shared || (String(state.moviePreview?.tmdbId) === id ? state.moviePreview : null);
+  if (!m) {
+    el.innerHTML = `<div class="sheet-inner"><div class="hero"><button class="close" data-action="close" aria-label="Close">←</button></div><div class="splash small"><div class="spinner"></div></div></div>`;
+    return;
+  }
+  const meta = [m.year, m.runtime && fmtDuration(m.runtime), m.rating && `★ ${m.rating}`].filter(Boolean).join(" · ");
+  const links = [
+    m.trailer && [`https://www.youtube.com/watch?v=${encodeURIComponent(m.trailer)}`, "▶ Trailer"],
+    [`https://www.themoviedb.org/movie/${m.tmdbId}`, "TMDB"],
+    m.imdbId && [`https://www.imdb.com/title/${encodeURIComponent(m.imdbId)}/`, "IMDb"],
+    [`https://letterboxd.com/tmdb/${m.tmdbId}/`, "Letterboxd"],
+  ].filter(Boolean);
+  const facts = [
+    m.directors?.length && `<div><span class="muted">Directed by</span> ${esc(m.directors.join(", "))}</div>`,
+    m.originalTitle && `<div><span class="muted">Original title</span> ${esc(m.originalTitle)}</div>`,
+    m.releaseDate && `<div><span class="muted">Released</span> ${new Date(m.releaseDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</div>`,
+  ].filter(Boolean).join("");
+
+  let mineBlock;
+  if (!mine) mineBlock = `<button class="btn primary wide" data-action="mv-add" data-id="${m.tmdbId}">＋ Add to my watchlist</button>`;
+  else if (mine.status !== "seen") mineBlock = `<button class="btn primary wide" data-action="mv-seen">✓ Mark as seen</button>`;
+  else mineBlock = `
+    <section>
+      <h3>You saw it ${fmtDate(mine.seenAt)} <button class="btn link small" data-action="mv-unseen">Not seen</button></h3>
+      ${movieStars(mine.myRating || 0)}
+      <p class="muted small">Tap a star to rate. Tap it again for half a star.</p>
+    </section>`;
+
+  const others = otherNames();
+  let togetherBlock;
+  if (!shared) {
+    togetherBlock = `
+      <section>
+        <h3>Watch together?</h3>
+        <button class="btn wide" data-action="mv-suggest">👥 Suggest to ${others ? esc(others) : "watch together"}</button>
+        <p class="muted small">Only this movie is shared. The rest of your watchlist stays private.</p>
+      </section>`;
+  } else {
+    const uid = state.user.uid;
+    togetherBlock = `
+      <section>
+        <h3>Watch together? ${shared.suggestedBy ? `<span class="muted small">Suggested by ${esc(state.users[shared.suggestedBy]?.name || "?")}</span>` : ""}</h3>
+        ${members().map((mb) => {
+          const v = shared.interest?.[mb.uid];
+          const me = mb.uid === uid;
+          return `<div class="vote-row">
+            <span class="who">${esc(mb.name)}${me ? " (you)" : ""}</span>
+            <div class="vote-btns">${INTEREST.map((i) => `<button class="${v === i.v ? "on" : ""}" ${me ? `data-action="mv-vote" data-v="${i.v}"` : "disabled"} title="${i.label}" aria-label="${i.label}">${thumbs(i.v)}<small>${i.label}</small></button>`).join("")}</div>
+          </div>`;
+        }).join("")}
+        ${isOurs(shared) ? `<p class="pill good">Watch together · ${thumbsTotal(shared)} thumbs up</p>` : ""}
+        ${isMaybeLater(shared) ? `<p class="pill later">Maybe later · you both gave it a thumb up</p>` : ""}
+        ${shared.status === "seen"
+          ? `<p>Watched together ${fmtDate(shared.seenAt)} <button class="btn link small" data-action="mv-togetherUnseen">Undo</button></p>`
+          : `<button class="btn wide" data-action="mv-togetherSeen">✓ We watched it together</button>`}
+        <button class="btn link small red" data-action="mv-unshare">Remove from Together</button>
+      </section>`;
+  }
+
+  el.innerHTML = `
+    <div class="sheet-inner">
+      <div class="hero" style="${m.backdrop ? `background-image:url('${img(m.backdrop, "w780")}')` : ""}">
+        <button class="close" data-action="close" aria-label="Close">←</button>
+      </div>
+      <div class="sheet-body">
+        <div class="title-row">
+          ${m.poster ? `<img class="poster-lg" src="${img(m.poster, "w185")}" alt="">` : ""}
+          <div>
+            <h2>${esc(m.title)}</h2>
+            <div class="muted small">${esc(meta)}</div>
+            <div class="muted small">${esc(m.genres?.join(", ") || "")}</div>
+          </div>
+        </div>
+        ${mineBlock}
+        ${m.overview ? `<p class="overview">${esc(m.overview)}</p>` : `<p class="muted">No description available.</p>`}
+        ${facts ? `<div class="facts small">${facts}</div>` : ""}
+        <div class="links">${links.map(([href, label]) => `<a class="linkbtn" href="${esc(href)}" target="_blank" rel="noopener">${label} ↗</a>`).join("")}</div>
+        ${providersSection(m, shared && !mine ? ourServices() : myServices(), shared && !mine ? "Where can we watch it?" : "Where can I watch it?")}
+        ${togetherBlock}
+        ${castSection(m, "movie")}
+        ${mine ? `<button class="btn danger wide" data-action="mv-delete">Remove from my list</button>` : ""}
+        <div class="danger-zone">
+          <button class="btn link small" data-action="mv-refresh">↻ Refresh info</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ----- Movie clicks (actions start with "mv-") -----
+async function movieClick(a, t) {
+  const id = t.dataset.id || state.openMovieId;
+  const uid = state.user.uid;
+  switch (a) {
+    case "open": return openMovie(id);
+    case "add": t.disabled = true; return addMovie(id);
+    case "sort": state.mf.sort = t.dataset.k; state.mf.limit = 60; return render();
+    case "onServices": state.mf.onServices = !state.mf.onServices; state.mf.limit = 60; return render();
+    case "more": state.mf.limit += 60; return render();
+    case "seenMore": state.seenLimit += 60; return render();
+    case "tFilter": state.togetherFilter = t.dataset.f; return render();
+    case "pickOpen": state.pick.open = true; return render();
+    case "pickClose": state.pick.open = false; state.pick.results = null; return render();
+    case "pickSet": state.pick[t.dataset.k] = t.dataset.v; state.pick.results = null; return render();
+    case "pickServices": state.pick.onServices = !state.pick.onServices; state.pick.results = null; return render();
+    case "pick": doPick(); return render();
+    case "skip": state.pick.skipped.add(Number(id)); return render();
+    case "unskip": state.pick.skipped.clear(); return render();
+    case "seen": return saveMovie(myMovieRef(id), { status: "seen", seenAt: Date.now() }).then(() => toast("Marked as seen. Rate it if you like!"));
+    case "unseen": return saveMovie(myMovieRef(id), { status: "want", seenAt: deleteField(), myRating: deleteField() });
+    case "rate": {
+      const n = Number(t.dataset.n);
+      const cur = myMovie(id)?.myRating || 0;
+      const next = cur === n ? n - 0.5 : cur === n - 0.5 ? 0 : n;
+      return saveMovie(myMovieRef(id), { myRating: next || deleteField() });
+    }
+    case "suggest": {
+      const base = myMovie(id) || state.moviePreview;
+      if (!base) return;
+      try {
+        await setDoc(sharedRef(id), { ...movieOnly(base), status: "want", interest: { [uid]: 2 }, suggestedBy: uid, suggestedAt: Date.now() });
+        toast(`Suggested to ${otherNames() || "watch together"}`);
+      } catch (err) { toast("Could not share: " + err.message); }
+      return;
+    }
+    case "vote": {
+      const v = Number(t.dataset.v);
+      const cur = sharedMovie(id)?.interest?.[uid];
+      return saveMovie(sharedRef(id), { [`interest.${uid}`]: cur === v ? deleteField() : v });
+    }
+    case "togetherSeen": {
+      const now = Date.now();
+      await saveMovie(sharedRef(id), { status: "seen", seenAt: now });
+      const mine = myMovie(id);
+      if (mine && mine.status !== "seen") await saveMovie(myMovieRef(id), { status: "seen", seenAt: now });
+      else if (!mine) await setDoc(myMovieRef(id), { ...movieOnly(sharedMovie(id)), status: "seen", seenAt: now, addedAt: now }).catch(() => {});
+      return toast("Marked as watched together");
+    }
+    case "togetherUnseen": return saveMovie(sharedRef(id), { status: "want", seenAt: deleteField() });
+    case "unshare": {
+      const m = sharedMovie(id);
+      if (!confirm(`Remove ${m.title} from Together? The votes are removed too.`)) return;
+      await deleteDoc(sharedRef(id));
+      if (!myMovie(id)) history.back();
+      return toast("Removed from Together");
+    }
+    case "refresh":
+      try {
+        const d = await fetchMovieData(id);
+        if (myMovie(id)) await updateDoc(myMovieRef(id), d);
+        if (sharedMovie(id)) await updateDoc(sharedRef(id), d);
+        if (!myMovie(id) && !sharedMovie(id)) { state.moviePreview = d; renderSheet(); }
+        toast("Updated");
+      } catch (err) { toast(err.message); }
+      return;
+    case "delete": {
+      const m = myMovie(id);
+      if (!confirm(`Remove ${m.title} from your list? This cannot be undone.`)) return;
+      history.back();
+      await deleteDoc(myMovieRef(id));
+      return toast("Removed");
+    }
+  }
+}
+
 // ---------- Clicks ----------
 document.addEventListener("click", async (e) => {
   const t = e.target.closest("[data-action]");
   if (!t) return;
   const a = t.dataset.action;
   const id = t.dataset.id || state.openId;
-  if (a === "advance" || a === "add") e.stopPropagation();
+  if (a === "advance" || a === "add" || a === "mv-add" || a === "mv-skip") e.stopPropagation();
+  if (t.tagName === "A" && t.getAttribute("href") === "#") e.preventDefault();
+  if (a.startsWith("mv-")) return movieClick(a.slice(3), t);
 
   switch (a) {
     case "login": {
@@ -864,11 +1420,17 @@ document.addEventListener("click", async (e) => {
       return updateDoc(doc(db, "users", state.user.uid), { services: next }).catch((err) => toast("Could not save: " + err.message));
     }
     case "tab":
-      state.tab = t.dataset.tab;
-      localStorage.setItem("tab", state.tab);
+      if (state.mode === "movies") { state.mtab = t.dataset.tab; localStorage.setItem("mtab", state.mtab); }
+      else { state.tab = t.dataset.tab; localStorage.setItem("tab", state.tab); }
       $("#main").innerHTML = "";
       window.scrollTo(0, 0);
       return render();
+    case "mode":
+      if (state.mode === t.dataset.m) return;
+      state.mode = t.dataset.m;
+      localStorage.setItem("mode", state.mode);
+      window.scrollTo(0, 0);
+      return renderShell();
     case "wantFilter": state.wantFilter = t.dataset.f; return render();
     case "open": return openSheet(id);
     case "close": return history.back();
