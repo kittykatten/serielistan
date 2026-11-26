@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v35";
+const APP_VERSION = "v36";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -820,6 +820,18 @@ function card(kind, x, scope, { skip = false, label = null } = {}) {
     </article>`;
 }
 
+// ---------- Genre filter: up to two genres that must both match ----------
+const hasGenres = (x, gs) => gs.every((g) => (x.genres || []).includes(g));
+function genreSelects(items, picked, change) {
+  const all = [...new Set(items.flatMap((x) => x.genres || []))].sort((a, b) => a.localeCompare(b));
+  if (!all.length) return "";
+  const sel = (i, label) => `<select data-change="${change}" data-i="${i}" aria-label="${label}" class="${picked[i] ? "on" : ""}">
+    <option value="">${label}</option>
+    ${all.filter((g) => g === picked[i] || !picked.includes(g)).map((g) => `<option value="${esc(g)}" ${picked[i] === g ? "selected" : ""}>${esc(g)}</option>`).join("")}
+  </select>`;
+  return sel(0, "All genres") + (picked[0] ? sel(1, "+ genre") : "");
+}
+
 // ---------- Watchlist ----------
 const myWatchlist = (kind) => list(kind, "mine").filter((x) => x.status === "want" && !oursActive(kind, x.tmdbId));
 
@@ -847,6 +859,8 @@ function renderWatchlist(kind) {
   if (f.onServices && svc) items = items.filter((x) => onServices(x, svc));
   if (f.tag) items = items.filter((x) => x.tags?.includes(f.tag));
   if (f.both) items = items.filter((x) => othersWith(kind, x.tmdbId).length && !get(kind, "ours", x.tmdbId));
+  const genres = (f.genres || []).filter(Boolean);
+  if (genres.length) items = items.filter((x) => hasGenres(x, genres));
   const anyBoth = all.some((x) => othersWith(kind, x.tmdbId).length && !get(kind, "ours", x.tmdbId));
   const tags = [...new Set(all.flatMap((x) => x.tags || []))].sort((a, b) => a.localeCompare(b));
   const by = {
@@ -863,6 +877,7 @@ function renderWatchlist(kind) {
         <span class="ctl-label">Filter</span>
         ${svc ? `<button class="chip ${f.onServices ? "on" : ""}" data-action="onServices">On my services</button>` : ""}
         ${anyBoth || f.both ? `<button class="chip ${f.both ? "on" : ""}" data-action="bothFilter">Also on ${esc(otherNames())}'s list</button>` : ""}
+        ${genreSelects(all, f.genres || [], "genre")}
         ${tags.length ? `<select data-change="tagFilter" aria-label="Filter by label" class="${f.tag ? "on" : ""}">
           <option value="">All labels</option>
           ${tags.map((tg) => `<option value="${esc(tg)}" ${f.tag === tg ? "selected" : ""}>${esc(tg)}</option>`).join("")}
@@ -981,10 +996,13 @@ function renderWatched(kind) {
   } else {
     const wtags = scope === "mine" ? [...new Set(all.filter((x) => x.status === "seen").flatMap((x) => x.tags || []))].sort((a, b) => a.localeCompare(b)) : [];
     const wtag = state.filters.movie.watchedTag;
-    const seen = all.filter((x) => x.status === "seen" && (!wtag || x.tags?.includes(wtag))).sort((a, b) => (b.seenAt || 0) - (a.seenAt || 0));
-    if (wtags.length) html += `<div class="controls"><div class="ctl-row"><span class="ctl-label">Filter</span>
-      <select data-change="watchedTag" aria-label="Filter by label" class="${wtag ? "on" : ""}"><option value="">All labels</option>
-      ${wtags.map((tg) => `<option value="${esc(tg)}" ${wtag === tg ? "selected" : ""}>${esc(tg)}</option>`).join("")}</select></div></div>`;
+    const wgen = (state.filters.movie.watchedGenres || []).filter(Boolean);
+    const seenAll = all.filter((x) => x.status === "seen");
+    const seen = seenAll.filter((x) => (!wtag || x.tags?.includes(wtag)) && hasGenres(x, wgen)).sort((a, b) => (b.seenAt || 0) - (a.seenAt || 0));
+    if (scope === "mine") html += `<div class="controls"><div class="ctl-row"><span class="ctl-label">Filter</span>
+      ${genreSelects(seenAll, state.filters.movie.watchedGenres || [], "watchedGenre")}
+      ${wtags.length ? `<select data-change="watchedTag" aria-label="Filter by label" class="${wtag ? "on" : ""}"><option value="">All labels</option>
+      ${wtags.map((tg) => `<option value="${esc(tg)}" ${wtag === tg ? "selected" : ""}>${esc(tg)}</option>`).join("")}</select>` : ""}</div></div>`;
     const year = new Date().getFullYear();
     const thisYear = seen.filter((x) => x.seenAt && new Date(x.seenAt).getFullYear() === year).length;
     html += seen.length
@@ -1945,6 +1963,13 @@ document.addEventListener("change", (e) => {
   if (t.dataset.change === "sort") f.sort = t.value;
   if (t.dataset.change === "tagFilter") f.tag = t.value || null;
   if (t.dataset.change === "watchedTag") f.watchedTag = t.value || null;
+  if (t.dataset.change === "genre" || t.dataset.change === "watchedGenre") {
+    const key = t.dataset.change === "genre" ? "genres" : "watchedGenres";
+    const gs = [...(f[key] || [])];
+    gs[Number(t.dataset.i)] = t.value || null;
+    if (!gs[0]) gs.length = 0; // clearing the first genre clears both
+    f[key] = gs;
+  }
   f.limit = 60;
   render();
 });
