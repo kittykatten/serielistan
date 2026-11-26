@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v18";
+const APP_VERSION = "v19";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -288,7 +288,7 @@ const state = {
   shared: [], // movies suggested to watch together
   moviesLoaded: false,
   moviesError: null,
-  mf: { q: "", onServices: false, sort: "added", limit: 60 },
+  mf: { q: "", onServices: false, sort: "added", limit: 60, tag: null },
   pick: { open: false, time: "any", mood: "any", onServices: true, results: null, skipped: new Set() },
   togetherFilter: "all",
   seenLimit: 60,
@@ -738,6 +738,7 @@ function renderSettings() {
         </header>
         <div class="sheet-body flat">
           <section id="acct"></section>
+          <section id="importBox"></section>
           <section>
             <h3>Your streaming services</h3>
             <p class="muted small">Pick the services you have. Series show the services that any of you has. Movies in your own watchlist show only yours. Other services are not shown. Pick none to show all.</p>
@@ -748,6 +749,7 @@ function renderSettings() {
         </div>
       </div>`;
     $("#svcFilter").oninput = (e) => { svcQuery = e.target.value; renderSettings(); };
+    renderImport();
   }
   const mine = new Set(state.users[state.user.uid]?.services || []);
   const others = members().filter((m) => m.uid !== state.user.uid);
@@ -1006,6 +1008,13 @@ const onServices = (m, set) => (m.providers?.stream || []).some((p) => set.has(p
 const otherNames = () => members().filter((m) => m.uid !== state.user.uid).map((m) => m.name).join(" & ");
 const myPendingMovies = () => state.shared.filter((m) => m.status === "want" && awaitsMyVote(m));
 
+// Seen dates show the year unless it is this year.
+const fmtSeen = (d) => {
+  if (!d) return "";
+  const dt = new Date(d);
+  return dt.toLocaleDateString("en-GB", dt.getFullYear() === new Date().getFullYear() ? { day: "numeric", month: "short" } : { day: "numeric", month: "short", year: "numeric" });
+};
+
 // Letterboxd-style stars: 3.5 -> ★★★½
 const starText = (r) => (r ? "★".repeat(Math.floor(r)) + (r % 1 ? "½" : "") : "");
 
@@ -1057,9 +1066,9 @@ function movieCard(m, { shared = false, skip = false } = {}) {
       ? `<div class="muted small">Watched together ${fmtDate(m.seenAt)}</div>`
       : `${isOurs(m) ? `<span class="pill good">Watch together</span>` : ""}${isMaybeLater(m) ? `<span class="pill later">Maybe later</span>` : ""}${awaitsMyVote(m) ? `<span class="pill ask">Waiting for your vote</span>` : ""}${interestRow(m)}`;
   } else if (m.status === "seen") {
-    extra = `<div class="small">${m.myRating ? `<span class="stars">${starText(m.myRating)}</span> ` : ""}<span class="muted">Seen ${fmtDate(m.seenAt)}</span></div>`;
-  } else if (sharedMovie(m.tmdbId)) {
-    extra = `<span class="pill later">Suggested to watch together</span>`;
+    extra = `<div class="small">${m.myRating ? `<span class="stars">${starText(m.myRating)}</span> ` : ""}<span class="muted">Seen${m.seenAt ? ` ${fmtSeen(m.seenAt)}` : ""}${m.where ? ` · ${esc(m.where)}` : ""}</span></div>`;
+  } else {
+    extra = `${sharedMovie(m.tmdbId) ? `<span class="pill later">Suggested to watch together</span>` : ""}${m.tags?.length ? `<div class="muted small">${esc(m.tags.join(" · "))}</div>` : ""}`;
   }
   return `
     <article class="card show" data-action="mv-open" data-id="${m.tmdbId}">
@@ -1092,6 +1101,8 @@ function renderWatchlist() {
   const q = f.q.trim().toLowerCase();
   if (q) list = list.filter((m) => [m.title, m.originalTitle, ...(m.directors || [])].filter(Boolean).join(" ").toLowerCase().includes(q));
   if (f.onServices && svc) list = list.filter((m) => onServices(m, svc));
+  if (f.tag) list = list.filter((m) => m.tags?.includes(f.tag));
+  const tags = [...new Set(all.flatMap((m) => m.tags || []))].sort((a, b) => a.localeCompare(b));
   const by = {
     added: (a, b) => (b.addedAt || 0) - (a.addedAt || 0),
     short: (a, b) => (a.runtime || 999) - (b.runtime || 999),
@@ -1105,6 +1116,7 @@ function renderWatchlist() {
       ${svc ? `<button class="chip ${f.onServices ? "on" : ""}" data-action="mv-onServices">On my services</button>` : ""}
       ${SORTS.map(([k, l]) => `<button class="chip ${f.sort === k ? "on" : ""}" data-action="mv-sort" data-k="${k}">${l}</button>`).join("")}
     </div>
+    ${tags.length ? `<div class="chips tags">${tags.map((tg) => `<button class="chip small ${f.tag === tg ? "on" : ""}" data-action="mv-tag" data-k="${esc(tg)}">${esc(tg)}</button>`).join("")}</div>` : ""}
     <p class="muted small count">${list.length === all.length ? `${all.length} movie${all.length === 1 ? "" : "s"}` : `${list.length} of ${all.length} movies`}${!svc ? ` · <a href="#" data-action="menu">Pick your streaming services</a> to filter by them` : ""}</p>`;
   const shown = list.slice(0, f.limit);
   $("#wlList").innerHTML = list.length
@@ -1290,6 +1302,9 @@ function renderMovieSheet(el) {
   const facts = [
     m.directors?.length && `<div><span class="muted">Directed by</span> ${esc(m.directors.join(", "))}</div>`,
     m.originalTitle && `<div><span class="muted">Original title</span> ${esc(m.originalTitle)}</div>`,
+    mine?.where && `<div><span class="muted">Watched at</span> ${esc(mine.where)}</div>`,
+    mine?.note && `<div><span class="muted">Note</span> ${esc(mine.note)}</div>`,
+    mine?.tags?.length && `<div><span class="muted">Lists</span> ${esc(mine.tags.join(", "))}</div>`,
     m.releaseDate && `<div><span class="muted">Released</span> ${new Date(m.releaseDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</div>`,
   ].filter(Boolean).join("");
 
@@ -1298,7 +1313,7 @@ function renderMovieSheet(el) {
   else if (mine.status !== "seen") mineBlock = `<button class="btn primary wide" data-action="mv-seen">✓ Mark as seen</button>`;
   else mineBlock = `
     <section>
-      <h3>You saw it ${fmtDate(mine.seenAt)} <button class="btn link small" data-action="mv-unseen">Not seen</button></h3>
+      <h3>${mine.seenAt ? `You saw it ${fmtSeen(mine.seenAt)}` : "You have seen it"} <button class="btn link small" data-action="mv-unseen">Not seen</button></h3>
       ${movieStars(mine.myRating || 0)}
       <p class="muted small">Tap a star to rate. Tap it again for half a star.</p>
     </section>`;
@@ -1373,6 +1388,7 @@ async function movieClick(a, t) {
     case "sort": state.mf.sort = t.dataset.k; state.mf.limit = 60; return render();
     case "onServices": state.mf.onServices = !state.mf.onServices; state.mf.limit = 60; return render();
     case "more": state.mf.limit += 60; return render();
+    case "tag": state.mf.tag = state.mf.tag === t.dataset.k ? null : t.dataset.k; state.mf.limit = 60; return render();
     case "seenMore": state.seenLimit += 60; return render();
     case "tFilter": state.togetherFilter = t.dataset.f; return render();
     case "pickOpen": state.pick.open = true; return render();
@@ -1439,6 +1455,140 @@ async function movieClick(a, t) {
   }
 }
 
+
+// ---------- Movie import ----------
+// Imports a file Claude made from your Letterboxd export and spreadsheet. Each title is matched
+// against TMDB here in the browser. Running it again skips what is already imported.
+const imp = { items: null, running: false, done: 0, total: 0, added: 0, skipped: 0, notFound: [], finished: false };
+const importKey = (t, y) => `${t.toLowerCase().replace(/[^a-z0-9]/g, "")}|${y || ""}`;
+
+function renderImport() {
+  const box = $("#importBox");
+  if (!box) return;
+  let body;
+  if (imp.running || imp.finished) {
+    const pct = imp.total ? Math.round((imp.done / imp.total) * 100) : 0;
+    body = `
+      <p>${imp.finished ? "Import finished." : "Importing… keep the app open."}</p>
+      <div class="bar big"><span style="width:${pct}%"></span></div>
+      <p class="muted small">${imp.done} of ${imp.total} done · ${imp.added} added · ${imp.skipped} already there · ${imp.notFound.length} not found</p>
+      ${imp.finished && imp.notFound.length ? `
+        <details><summary class="small">Not found on TMDB (${imp.notFound.length})</summary>
+          <p class="muted small">Search for these under Movies → Search and add them by hand.</p>
+          <ul class="small">${imp.notFound.map((x) => `<li>${esc(x.t)} (${esc(x.y || "?")})</li>`).join("")}</ul>
+        </details>` : ""}`;
+  } else if (imp.items) {
+    const want = imp.items.filter((i) => i.s === "want").length;
+    body = `
+      <p>The file has <b>${want}</b> movies to watch and <b>${imp.items.length - want}</b> seen movies.</p>
+      <button class="btn primary wide" data-action="importStart">Start import</button>
+      <p class="muted small">Takes a few minutes. Keep the app open until it says finished.</p>`;
+  } else {
+    body = `
+      <p class="muted small">Choose the import file Claude made from your Letterboxd export and spreadsheet.</p>
+      <label class="btn wide filebtn">Choose file…<input id="importFile" type="file" accept=".json,application/json" hidden></label>`;
+  }
+  box.innerHTML = `<h3>Import movies</h3>${body}`;
+  const input = $("#importFile");
+  if (input) input.onchange = async (e) => {
+    try {
+      const data = JSON.parse(await e.target.files[0].text());
+      if (data.kind !== "serielistan-movie-import") throw new Error("This is not an import file from Claude.");
+      imp.items = data.items;
+    } catch (err) { toast("Could not read the file: " + err.message); }
+    renderImport();
+  };
+}
+
+const yearOf = (r) => Number((r.release_date || "").slice(0, 4)) || null;
+// Find the TMDB movie for a title and year. Tries the exact year first, then a year off by one.
+async function findMovie(title, year) {
+  const clean = title.replace(/\s*\([^)]*\)\s*$/, "").trim();
+  const y = Number(year) || null;
+  if (y) {
+    const d = await tmdb("/search/movie", { query: clean, primary_release_year: y, include_adult: "false" });
+    if (d.results?.length) return d.results[0];
+  }
+  const d = await tmdb("/search/movie", { query: clean, include_adult: "false" });
+  const res = d.results || [];
+  if (!y) return res[0] || null;
+  return res.find((r) => yearOf(r) && Math.abs(yearOf(r) - y) <= 1) || null;
+}
+
+async function importOne(item, byId) {
+  const key = importKey(item.t, item.y);
+  if (state.movies.some((m) => m.importKey === key)) { imp.skipped++; return; }
+  const hit = await findMovie(item.t, item.y);
+  if (!hit) { imp.notFound.push(item); return; }
+  const id = hit.id;
+  const day = (d) => (d ? new Date(d + "T12:00:00").getTime() : null);
+  const personal = {
+    status: item.s,
+    addedAt: day(item.added) || Date.now(),
+    importKey: key,
+    ...(item.s === "seen" ? { seenAt: day(item.seen) } : {}),
+    ...(item.r ? { myRating: item.r } : {}),
+    ...(item.where ? { where: item.where } : {}),
+    ...(item.note ? { note: item.note } : {}),
+    tags: item.tags || [],
+  };
+  // The same movie can appear twice (e.g. on a list and as seen): merge, and seen wins.
+  const prev = byId.get(id) || myMovie(id);
+  if (prev) {
+    const merged = {
+      ...personal,
+      status: prev.status === "seen" || item.s === "seen" ? "seen" : "want",
+      seenAt: prev.seenAt || personal.seenAt || null,
+      myRating: prev.myRating || personal.myRating || null,
+      tags: [...new Set([...(prev.tags || []), ...personal.tags])],
+      addedAt: Math.min(prev.addedAt || Infinity, personal.addedAt),
+    };
+    byId.set(id, { ...prev, ...merged });
+    await updateDoc(myMovieRef(id), merged);
+    imp.skipped++;
+    return;
+  }
+  let data;
+  if (item.s === "want") data = await fetchMovieData(id); // full details: runtime, services, cast
+  else data = { // seen movies only need the basics; details are fetched when you open one
+    tmdbId: id, title: hit.title || item.t, originalTitle: hit.original_title && hit.original_title !== hit.title ? hit.original_title : null,
+    poster: hit.poster_path || null, backdrop: hit.backdrop_path || null, overview: hit.overview || "",
+    year: (hit.release_date || "").slice(0, 4), releaseDate: hit.release_date || null,
+    rating: hit.vote_average ? Math.round(hit.vote_average * 10) / 10 : null,
+    lang: CONFIG.language, dataV: 0, fetchedAt: 0,
+  };
+  const doc_ = { ...data, ...personal };
+  byId.set(id, doc_);
+  await setDoc(myMovieRef(id), doc_);
+  imp.added++;
+}
+
+async function runImport() {
+  if (imp.running || !imp.items) return;
+  Object.assign(imp, { running: true, finished: false, done: 0, added: 0, skipped: 0, notFound: [], total: imp.items.length });
+  const queue = [...imp.items];
+  const byId = new Map();
+  let last = 0;
+  const worker = async () => {
+    while (queue.length) {
+      const item = queue.shift();
+      try { await importOne(item, byId); }
+      catch (err) {
+        // Rate limited or a network hiccup: wait and try once more.
+        await new Promise((r) => setTimeout(r, 2000));
+        try { await importOne(item, byId); } catch { imp.notFound.push(item); }
+      }
+      imp.done++;
+      if (Date.now() - last > 400) { last = Date.now(); renderImport(); }
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  imp.running = false;
+  imp.finished = true;
+  renderImport();
+  toast(`Import finished: ${imp.added} movies added`);
+}
+
 // ---------- Clicks ----------
 document.addEventListener("click", async (e) => {
   const t = e.target.closest("[data-action]");
@@ -1482,6 +1632,7 @@ document.addEventListener("click", async (e) => {
       if (patch.foreign) { refreshStale(); refreshStaleMovies(); toast("Updating streaming info…"); }
       return;
     }
+    case "importStart": return runImport();
     case "svcRegion": svcRegion = t.dataset.r; loadRegionServices(svcRegion); return renderSettings();
     case "tab":
       if (state.mode === "movies") { state.mtab = t.dataset.tab; localStorage.setItem("mtab", state.mtab); }

@@ -216,3 +216,8 @@ h4.small { font-weight: 600; margin-top: 14px; }
 .star { font-size: 34px; line-height: 1; color: var(--surface2); padding: 2px; }
 .star.full { color: var(--accent2); }
 .star.half { background: linear-gradient(90deg, var(--accent2) 50%, var(--surface2) 50%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.chip.small { padding: 5px 11px; font-size: 12px; }
+.chips.tags { padding-top: 0; }
+.filebtn { display: block; text-align: center; }
+details summary { cursor: pointer; margin: 8px 0; }
+details ul { padding-left: 18px; color: var(--muted); }
