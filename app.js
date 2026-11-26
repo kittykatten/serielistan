@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v41";
+const APP_VERSION = "v42";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -380,6 +380,11 @@ const MOODS = {
   whodunit: { label: "Whodunit", test: (x, g, k) =>
     (g.has("Mystery") && g.has("Crime")) || any(k, ["murder mystery", "whodunit", "detective", "amateur detective", "investigation"]) },
   forreal: { label: "For real", test: (x, g) => g.has("Documentary") },
+  // Combine with For real for music documentaries
+  music: { label: "Music", test: (x, g, k) =>
+    g.has("Music") || any(k, ["musical", "music documentary", "musician", "rock 'n' roll", "concert", "concert film", "concert footage", "rock band",
+      "singer", "alternative rock", "punk rock", "rock star", "music", "music history", "folk music", "jazz", "jazz singer or musician", "rock music",
+      "country music", "jukebox musical", "hip-hop", "rapper", "band", "composer", "opera singer", "pop star", "music industry"]) },
   worlds: { label: "Other worlds", test: (x, g) => any(g, ["Science Fiction", "Fantasy", "Sci-Fi & Fantasy"]) },
 };
 const moodsOf = (x) => { const g = gOf(x), k = kwOf(x); return Object.keys(MOODS).filter((m) => MOODS[m].test(x, g, k)); };
