@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v28";
+const APP_VERSION = "v29";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -301,6 +301,7 @@ async function fetchMovieData(id) {
       id: c.id, name: c.name, profile: c.profile_path || null, character: c.character || "",
     })),
     imdbId: d.imdb_id || null,
+    country: (d.origin_country || [])[0] || d.production_countries?.[0]?.iso_3166_1 || null,
     trailer: trailer?.key || null,
     providers: {
       stream: streamList(d),
@@ -377,7 +378,7 @@ const state = {
   sheetSeason: null,
 };
 if (!["watchlist", "watching", "watched", "search"].includes(state.tab.tv)) state.tab.tv = "watchlist";
-if (!["watchlist", "watched", "search"].includes(state.tab.movie)) state.tab.movie = "watchlist";
+if (!["watchlist", "watched", "stats", "search"].includes(state.tab.movie)) state.tab.movie = "watchlist";
 
 const list = (kind, scope) => state.data[kind][scope];
 const get = (kind, scope, id) => list(kind, scope).find((x) => String(x.tmdbId) === String(id));
@@ -613,7 +614,7 @@ function advance(kind, scope, id) {
 // ---------- Main view ----------
 const TABS = {
   tv: [["watchlist", "🍿", "Watchlist"], ["watching", "▶️", "Watching"], ["watched", "✅", "Watched"], ["search", "🔍", "Search"]],
-  movie: [["watchlist", "🎬", "Watchlist"], ["watched", "✅", "Watched"], ["search", "🔍", "Search"]],
+  movie: [["watchlist", "🎬", "Watchlist"], ["watched", "✅", "Watched"], ["stats", "📊", "Stats"], ["search", "🔍", "Search"]],
 };
 function renderShell() {
   $("#app").innerHTML = `
@@ -661,6 +662,7 @@ function renderNow() {
   else if (tab === "search") renderSearch(kind);
   else if (tab === "watching") renderWatching(kind);
   else if (tab === "watched") renderWatched(kind);
+  else if (tab === "stats") renderStats();
   else renderWatchlist(kind);
   if (state.open) renderSheet();
   renderSettings();
@@ -1063,6 +1065,8 @@ function renderSheet() {
     myBlock = `
       <section>
         <h3>${mine.seenAt ? `You saw it ${fmtSeen(mine.seenAt)}` : "You have seen it"} <button class="btn link small" data-action="unseen">Not seen</button></h3>
+        ${mine.views?.length > 1 ? `<p class="muted small">Seen ${mine.views.length} times: ${mine.views.map((d) => fmtSeen(new Date(d + "T12:00:00").getTime())).join(", ")}</p>` : ""}
+        <button class="btn link small" data-action="seenAgain">＋ Seen it again today</button>
         ${movieStars(mine.myRating || 0)}
         <p class="muted small">Tap a star to rate. Tap it again for half a star.</p>
         <label class="field-label" for="whereText">Where did you watch it?</label>
@@ -1358,7 +1362,7 @@ function renderSettings() {
 // 1. Check: every title is looked up on TMDB. Only an exact title match counts as certain.
 //    The result is a plan you can look through: corrections, uncertain matches, not found.
 // 2. Apply: the plan is saved. Things you changed in the app are kept; the file only adds.
-const imp = { items: null, phase: "idle", done: 0, total: 0, plan: null, keep: {}, notFound: [], failed: [], applied: 0 };
+const imp = { items: null, details: null, phase: "idle", done: 0, total: 0, plan: null, keep: {}, notFound: [], failed: [], applied: 0 };
 const importKey = (t, y) => `${t.toLowerCase().replace(/[^a-z0-9]/g, "")}|${y || ""}`;
 const yearOf = (r) => Number((r.release_date || "").slice(0, 4)) || null;
 const normTitle = (s) => (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/&/g, "and").replace(/[^a-z0-9]/g, "");
@@ -1434,6 +1438,11 @@ function renderImport() {
       <button class="btn link small" data-action="importReset">Cancel</button>`;
   } else if (imp.phase === "applied") {
     body = `<p><b>Done.</b> ${imp.applied} movies updated or added.</p><button class="btn link small" data-action="importReset">Import another file</button>`;
+  } else if (imp.details) {
+    body = `
+      <p>The file has details for <b>${imp.details.length}</b> movies: length, genres, country, directors and viewing dates. Nothing needs to be looked up.</p>
+      <button class="btn primary wide" data-action="importDetails">Save details</button>
+      <button class="btn link small" data-action="importReset">Cancel</button>`;
   } else if (imp.items) {
     const want = imp.items.filter((i) => i.s === "want").length;
     body = `
@@ -1451,8 +1460,9 @@ function renderImport() {
   if (input) input.onchange = async (e) => {
     try {
       const data = JSON.parse(await e.target.files[0].text());
-      if (data.kind !== "serielistan-movie-import") throw new Error("This is not an import file from Claude.");
-      imp.items = data.items;
+      if (data.kind === "serielistan-movie-details") imp.details = data.items;
+      else if (data.kind !== "serielistan-movie-import") throw new Error("This is not an import file from Claude.");
+      else imp.items = data.items;
     } catch (err) { toast("Could not read the file: " + err.message); }
     renderImport();
   };
@@ -1646,6 +1656,165 @@ async function importFromLink() {
   } catch (err) { toast("Could not read the import link: " + err.message); }
 }
 
+
+// ---------- Statistics (movies, only your own) ----------
+// Every viewing counts, also movies you watched together: they are in your own Watched list too.
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const countryName = (() => {
+  let dn = null;
+  try { dn = new Intl.DisplayNames(["en"], { type: "region" }); } catch {}
+  return (code) => { try { return (dn && code && dn.of(code)) || code || "Unknown"; } catch { return code || "Unknown"; } };
+})();
+// One row per viewing: { m, at (ms or null), year, month, gff }
+function viewings() {
+  const out = [];
+  for (const m of list("movie", "mine")) {
+    if (m.status !== "seen") continue;
+    const dates = m.views?.length ? m.views.map((d) => new Date(d + "T12:00:00").getTime()) : [m.seenAt || null];
+    for (const at of dates) {
+      const dt = at ? new Date(at) : null;
+      const year = dt ? dt.getFullYear() : null, month = dt ? dt.getMonth() : null;
+      // A festival viewing: noted as GFF in your sheet, or labelled GFF that year and seen in Jan or Feb
+      const gff = /gff/i.test(m.note || "") || (year && month <= 1 && (m.tags || []).includes(`GFF ${year}`));
+      out.push({ m, at, year, month, gff });
+    }
+  }
+  return out;
+}
+const hours = (vs) => vs.reduce((s, v) => s + (v.m.runtime || 0), 0) / 60;
+const fmtH = (h) => `${Math.round(h)} h`;
+function topList(vs, keyFn, n = 5) {
+  const c = new Map();
+  for (const v of vs) for (const k of [].concat(keyFn(v.m) || [])) if (k) c.set(k, (c.get(k) || 0) + 1);
+  return [...c.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))).slice(0, n);
+}
+const statsState = { year: null }; // null = all years
+
+function renderStats() {
+  const main = $("#main");
+  main.dataset.view = "stats";
+  const all = viewings();
+  const now = new Date();
+  const years = [...new Set(all.map((v) => v.year).filter(Boolean))].sort((a, b) => b - a);
+  const sel = statsState.year;
+  const vs = sel ? all.filter((v) => v.year === sel) : all;
+  const undated = all.filter((v) => !v.year).length;
+  const missingDetails = list("movie", "mine").filter((m) => m.status === "seen" && !m.runtime).length;
+
+  // 1. Tiles
+  const rated = [...new Set(vs.map((v) => v.m))].filter((m) => m.myRating);
+  const avg = rated.length ? rated.reduce((s, m) => s + m.myRating, 0) / rated.length : null;
+  let compare = "";
+  if (sel === now.getFullYear()) {
+    const dayOfYear = (d) => (d - new Date(d.getFullYear(), 0, 1)) / DAY;
+    const lastYear = all.filter((v) => v.year === sel - 1 && dayOfYear(new Date(v.at)) <= dayOfYear(now)).length;
+    const diff = vs.length - lastYear;
+    compare = `<div class="tile"><div class="v">${diff >= 0 ? "+" : ""}${diff}</div><div class="l">vs ${sel - 1} by today</div></div>`;
+  }
+  const tiles = `
+    <div class="tiles">
+      <div class="tile"><div class="v">${vs.length}</div><div class="l">movies${sel ? "" : " in total"}</div></div>
+      <div class="tile"><div class="v">${fmtH(hours(vs))}</div><div class="l">watched</div></div>
+      <div class="tile"><div class="v">${avg ? avg.toFixed(1) + " ★" : "–"}</div><div class="l">average rating</div></div>
+      ${compare || `<div class="tile"><div class="v">${vs.filter((v) => !v.gff).length}</div><div class="l">outside GFF</div></div>`}
+    </div>`;
+
+  // 3. Per year
+  const perYear = years.map((y) => {
+    const yv = all.filter((v) => v.year === y);
+    const months = y === now.getFullYear() ? now.getMonth() + 1 : 12;
+    const ng = yv.filter((v) => !v.gff);
+    return `<tr class="${sel === y ? "sel" : ""}"><td>${y}</td><td>${yv.length}</td><td>${fmtH(hours(yv))}</td><td>${(yv.length / months).toFixed(1)}</td><td>${ng.length}</td><td>${fmtH(hours(ng))}</td></tr>`;
+  }).join("");
+
+  // 4. Month by month
+  const maxCell = Math.max(1, ...years.flatMap((y) => MONTHS.map((_, i) => all.filter((v) => v.year === y && v.month === i).length)));
+  const grid = `
+    <table class="grid"><thead><tr><th></th>${[...years].reverse().map((y) => `<th>${String(y).slice(2)}</th>`).join("")}</tr></thead><tbody>
+      ${MONTHS.map((mn, i) => `<tr><th>${mn}</th>${[...years].reverse().map((y) => {
+        const n = all.filter((v) => v.year === y && v.month === i).length;
+        return `<td style="--a:${n ? 0.15 + 0.85 * (n / maxCell) : 0}">${n || ""}</td>`;
+      }).join("")}</tr>`).join("")}
+    </tbody></table>`;
+
+  // 5. Top lists
+  const top = (title, rows, fmt = (k) => esc(k)) => `
+    <div class="toplist"><h4>${title}</h4>${rows.length ? `<ol>${rows.map(([k, n]) => `<li><span>${fmt(k)}</span><b>${n}</b></li>`).join("")}</ol>` : `<p class="muted small">No data yet</p>`}</div>`;
+  const decade = (m) => { const y = Number(m.firstShown?.slice(0, 4) || m.lbYear || m.year); return y ? `${Math.floor(y / 10) * 10}s` : null; };
+  const tops = `
+    <div class="tops">
+      ${top("Countries", topList(vs, (m) => m.country), (k) => esc(countryName(k)))}
+      ${top("Genres", topList(vs, (m) => m.genres))}
+      ${top("Directors", topList(vs, (m) => m.directors))}
+      ${top("Decades", topList(vs, decade))}
+    </div>`;
+
+  // 6. Where
+  const whereRows = topList(vs, (m) => m.where, 8);
+  const cinema = vs.filter((v) => /^bio\b/i.test(v.m.where || "")).length;
+  const withWhere = vs.filter((v) => v.m.where).length;
+  const where = `
+    ${withWhere ? `<p class="small">${Math.round((cinema / withWhere) * 100)} % at the cinema · ${withWhere - cinema} at home or elsewhere <span class="muted">(${withWhere} of ${vs.length} have a place)</span></p>` : ""}
+    ${top("Most used", whereRows)}`;
+
+  // 7. Ratings
+  const steps = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
+  const ratedViews = vs.filter((v) => v.m.myRating);
+  const maxR = Math.max(1, ...steps.map((s) => ratedViews.filter((v) => v.m.myRating === s).length));
+  const best = [...new Set(vs.map((v) => v.m))].filter((m) => m.myRating).sort((a, b) => b.myRating - a.myRating || (b.seenAt || 0) - (a.seenAt || 0)).slice(0, 5);
+  const ratings = `
+    <div class="hist">${steps.map((s) => {
+      const n = ratedViews.filter((v) => v.m.myRating === s).length;
+      return `<div class="hcol"><div class="hbar" style="height:${Math.round((n / maxR) * 100)}%"><span>${n || ""}</span></div><div class="hlab">${s % 1 ? s : s + ""}</div></div>`;
+    }).join("")}</div>
+    ${best.length ? `<h4>Highest rated</h4><ol class="best">${best.map((m) => `<li data-action="open" data-kind="movie" data-id="${m.tmdbId}"><span>${esc(m.title)} <span class="muted">${esc(yearShown(m))}</span></span><span class="stars">${starText(m.myRating)}</span></li>`).join("")}</ol>` : ""}`;
+
+  main.innerHTML = `
+    <div class="chips">
+      <button class="chip ${sel ? "" : "on"}" data-action="statsYear" data-y="">All years</button>
+      ${years.map((y) => `<button class="chip ${sel === y ? "on" : ""}" data-action="statsYear" data-y="${y}">${y}</button>`).join("")}
+    </div>
+    ${missingDetails > 50 ? `<div class="notice small">Hours, countries, genres and directors are missing for ${missingDetails} movies. Import the details file from Claude under <a href="#" data-action="menu">Settings → Import movies</a>.</div>` : ""}
+    ${tiles}
+    <section class="card stat"><h3>Goals</h3><p class="muted small">Goals for 2027 (how many movies, and what kinds) are coming here.</p></section>
+    <section class="card stat"><h3>Per year</h3>
+      <table class="yt"><thead><tr><th>Year</th><th>Movies</th><th>Hours</th><th>/month</th><th>Excl. GFF</th><th>Hours</th></tr></thead><tbody>${perYear}</tbody></table>
+      ${undated ? `<p class="muted small">${undated} movies have no date and are only counted in All years.</p>` : ""}
+    </section>
+    <section class="card stat"><h3>Month by month</h3>${grid}</section>
+    <section class="card stat"><h3>Top lists ${sel ? sel : "· all years"}</h3>${tops}</section>
+    <section class="card stat"><h3>Where you watch</h3>${where}</section>
+    <section class="card stat"><h3>Ratings</h3>${ratings}</section>`;
+}
+
+// Applies a details file from Claude (runtime, genres, country, directors, viewing dates). No searching.
+async function applyDetails(items) {
+  Object.assign(imp, { phase: "applying", done: 0, total: items.length, applied: 0 });
+  renderImport();
+  await runInParallel(items, async (d) => {
+    const m = get("movie", "mine", d.id);
+    if (!m) return;
+    const patch = {};
+    if (d.runtime && !m.runtime) patch.runtime = d.runtime;
+    if (d.genres?.length && !m.genres?.length) patch.genres = d.genres;
+    if (d.directors?.length && !m.directors?.length) patch.directors = d.directors;
+    if (d.country && !m.country) patch.country = d.country;
+    if (d.firstShown && !m.firstShown) patch.firstShown = d.firstShown;
+    if (d.views?.length && m.status === "seen" && JSON.stringify(m.views || []) !== JSON.stringify(d.views)) {
+      patch.views = d.views;
+      patch.seenAt = new Date(d.views[d.views.length - 1] + "T12:00:00").getTime();
+    }
+    if (Object.keys(patch).length) {
+      try { await updateDoc(ref("movie", "mine", d.id), patch); imp.applied++; } catch (err) { console.warn(err); }
+    }
+  }, 3);
+  imp.phase = "applied";
+  renderImport();
+  toast("Details saved");
+}
+
+const todayISO = () => new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD in your time zone
+
 // ---------- Labels ----------
 // Labels (tags) belong to your own lists. They can be added per item and renamed or removed everywhere.
 const allTags = () => {
@@ -1735,7 +1904,7 @@ document.addEventListener("click", async (e) => {
     case "svcRegion": svcRegion = t.dataset.r; loadRegionServices(svcRegion); return renderSettings();
     case "importStart": return runImport();
     case "importApply": return applyImport();
-    case "importReset": Object.assign(imp, { items: null, phase: "idle", plan: null }); return renderImport();
+    case "importReset": Object.assign(imp, { items: null, details: null, phase: "idle", plan: null }); return renderImport();
     case "saveReview": {
       const text = $("#reviewText")?.value.trim() || "";
       const where = $("#whereText")?.value.trim() || "";
@@ -1848,8 +2017,15 @@ document.addEventListener("click", async (e) => {
     case "resetEp": return save(kind, t.dataset.scope, id, { progress: { s: 0, e: 0 } });
 
     // Movies
-    case "seen": return save("movie", "mine", id, { status: "seen", seenAt: Date.now() }).then(() => toast("Marked as seen. Rate it if you like!"));
-    case "unseen": return save("movie", "mine", id, { status: "want", seenAt: deleteField(), myRating: deleteField() });
+    case "seen": return save("movie", "mine", id, { status: "seen", seenAt: Date.now(), views: [todayISO()] }).then(() => toast("Marked as seen. Rate it if you like!"));
+    case "seenAgain": {
+      const m = get("movie", "mine", id);
+      const views = [...(m.views?.length ? m.views : m.seenAt ? [new Date(m.seenAt).toLocaleDateString("sv-SE")] : []), todayISO()];
+      return save("movie", "mine", id, { seenAt: Date.now(), views }).then(() => toast(`Seen ${views.length} times`));
+    }
+    case "unseen": return save("movie", "mine", id, { status: "want", seenAt: deleteField(), myRating: deleteField(), views: deleteField() });
+    case "statsYear": statsState.year = t.dataset.y ? Number(t.dataset.y) : null; return render();
+    case "importDetails": { const items = imp.details; imp.details = null; return applyDetails(items); }
     case "rate": {
       const n = Number(t.dataset.n);
       const cur = get("movie", "mine", id)?.myRating || 0;
