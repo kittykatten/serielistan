@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v17";
+const APP_VERSION = "v18";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -113,7 +113,29 @@ function providerList(...lists) {
 
 // Bump when fetchShowData stores new fields, so saved shows are fetched again.
 const DATA_V = 2;
-const needsRefresh = (s, maxAge) => Date.now() - (s.fetchedAt || 0) > maxAge || s.lang !== CONFIG.language || s.dataV !== DATA_V;
+const needsRefresh = (s, maxAge) => Date.now() - (s.fetchedAt || 0) > maxAge || s.lang !== CONFIG.language || s.dataV !== DATA_V
+  || (s.foreignKey || "") !== foreignKey();
+
+// Services from other countries that someone has picked in Settings (e.g. Kanopy via a US library card).
+// Stored per person as users/{uid}.foreign = [{ r: "US", id: 191, name: "Kanopy" }].
+const foreignServices = () => Object.values(state.users).flatMap((u) => u.foreign || []);
+const foreignKey = () => [...new Set(foreignServices().map((f) => `${f.r}:${f.id}`))].sort().join(",");
+// Picks out the chosen foreign services from TMDB's watch/providers results (all countries).
+function foreignProviders(results, already) {
+  const out = [];
+  for (const f of foreignServices()) {
+    const wp = results?.[f.r];
+    if (!wp || already.some((p) => p.id === f.id) || out.some((p) => p.id === f.id)) continue;
+    const hit = [...(wp.flatrate || []), ...(wp.free || []), ...(wp.ads || [])].find((p) => p.provider_id === f.id);
+    if (hit) out.push({ id: f.id, name: `${hit.provider_name} (${f.r})`, logo: hit.logo_path || null });
+  }
+  return out;
+}
+function streamList(d) {
+  const wp = d["watch/providers"]?.results?.[CONFIG.region] || {};
+  const local = providerList(wp.flatrate, wp.free, wp.ads);
+  return [...local, ...foreignProviders(d["watch/providers"]?.results, local)];
+}
 
 // Runtime (minutes) per episode, fetched season by season (max 20 seasons per request).
 async function fetchRuntimes(id, seasons) {
@@ -172,11 +194,12 @@ async function fetchShowData(id) {
     lastAired: ep(d.last_episode_to_air),
     nextAir: ep(d.next_episode_to_air),
     providers: {
-      stream: providerList(wp.flatrate, wp.free, wp.ads),
+      stream: streamList(d),
       rent: providerList(wp.rent, wp.buy),
       link: wp.link || null,
     },
     lang: CONFIG.language,
+    foreignKey: foreignKey(),
     dataV: DATA_V,
     fetchedAt: Date.now(),
   };
@@ -450,7 +473,7 @@ function render() {
 // Streaming services each person has picked in Settings. The app shows the union of everyone's picks;
 // with no picks at all, every service is shown.
 function ourServices() {
-  const ids = new Set(Object.values(state.users).flatMap((u) => u.services || []));
+  const ids = new Set(Object.values(state.users).flatMap((u) => [...(u.services || []), ...(u.foreign || []).map((f) => f.id)]));
   return ids.size ? ids : null;
 }
 function splitProviders(show, mine = ourServices()) {
@@ -459,10 +482,16 @@ function splitProviders(show, mine = ourServices()) {
   return { ours: all.filter((p) => mine.has(p.id)), others: all.filter((p) => !mine.has(p.id)) };
 }
 
+// Where to watch, on a card: only the services you have picked. Other services are left out on purpose.
 function providerLogos(show, max = 3, services = ourServices()) {
-  const p = splitProviders(show, services).ours;
-  if (!p.length) return "";
-  return `<div class="logos">${p.slice(0, max).filter((x) => x.logo).map((x) => `<img src="${img(x.logo, "w92")}" alt="${esc(x.name)}" title="${esc(x.name)}">`).join("")}${p.length > max ? `<span class="more">+${p.length - max}</span>` : ""}</div>`;
+  if (!show.providers) return "";
+  const { ours } = splitProviders(show, services);
+  if (ours.length) {
+    return `<div class="logos">${ours.slice(0, max).map((x) => x.logo
+      ? `<img src="${img(x.logo, "w92")}" alt="${esc(x.name)}" title="${esc(x.name)}">`
+      : `<span class="more">${esc(x.name)}</span>`).join("")}${ours.length > max ? `<span class="more">+${ours.length - max}</span>` : ""}</div>`;
+  }
+  return services ? `<div class="muted small">Not on your services</div>` : "";
 }
 
 const awaitsMyVote = (show) => show.interest?.[state.user.uid] === undefined;
@@ -659,6 +688,9 @@ window.addEventListener("popstate", () => {
 let settingsOpen = false;
 let allServices = null; // every streaming service in the region, from TMDB
 let svcQuery = "";
+let svcRegion = CONFIG.region; // which country's services the settings list shows
+const REGIONS = [["SE", "Sweden"], ["US", "USA"], ["GB", "UK"], ["CA", "Canada"], ["AU", "Australia"]];
+const regionServices = {}; // region -> list of services, from TMDB
 
 function openSettings() {
   settingsOpen = true;
@@ -666,25 +698,31 @@ function openSettings() {
   $("#settings").hidden = false;
   document.body.classList.add("noscroll");
   renderSettings();
-  if (!allServices) {
-    // Services for series and for movies differ a little (e.g. film-only services), so combine both lists.
-    Promise.all(["tv", "movie"].map((k) => tmdb(`/watch/providers/${k}`, { watch_region: CONFIG.region })))
-      .then((lists) => {
-        const seen = new Set();
-        allServices = lists.flatMap((d) => d.results || [])
-          .sort((a, b) => (a.display_priorities?.[CONFIG.region] ?? a.display_priority) - (b.display_priorities?.[CONFIG.region] ?? b.display_priority))
-          .filter((p) => !seen.has(p.provider_id) && seen.add(p.provider_id))
-          .map((p) => ({ id: p.provider_id, name: p.provider_name, logo: p.logo_path }));
-        renderSettings();
-      })
-      .catch((err) => { allServices = []; toast("Could not load services: " + err.message); renderSettings(); });
-  }
+  loadRegionServices(svcRegion);
 }
+// Services for series and for movies differ a little (e.g. film-only services), so combine both lists.
+function loadRegionServices(region) {
+  if (regionServices[region]) return;
+  regionServices[region] = "loading";
+  Promise.all(["tv", "movie"].map((k) => tmdb(`/watch/providers/${k}`, { watch_region: region })))
+    .then((lists) => {
+      const seen = new Set();
+      regionServices[region] = lists.flatMap((d) => d.results || [])
+        .sort((a, b) => (a.display_priorities?.[region] ?? a.display_priority) - (b.display_priorities?.[region] ?? b.display_priority))
+        .filter((p) => !seen.has(p.provider_id) && seen.add(p.provider_id))
+        .map((p) => ({ id: p.provider_id, name: p.provider_name, logo: p.logo_path }));
+      if (region === CONFIG.region) allServices = regionServices[region];
+      renderSettings();
+    })
+    .catch((err) => { delete regionServices[region]; toast("Could not load services: " + err.message); });
+}
+
 function closeSettings() {
   settingsOpen = false;
   $("#settings").hidden = true;
   $("#settings").innerHTML = "";
   svcQuery = "";
+  svcRegion = CONFIG.region;
   if (!state.openId && !state.openMovieId) document.body.classList.remove("noscroll");
 }
 
@@ -702,7 +740,7 @@ function renderSettings() {
           <section id="acct"></section>
           <section>
             <h3>Your streaming services</h3>
-            <p class="muted small">Pick the services you have. Series show the services that any of you has. Movies in your own watchlist show only yours. Services you have not picked are listed under "Also on". Pick none to show all.</p>
+            <p class="muted small">Pick the services you have. Series show the services that any of you has. Movies in your own watchlist show only yours. Other services are not shown. Pick none to show all.</p>
             <div id="svcOthers"></div>
             <input id="svcFilter" type="search" placeholder="Find a service…" autocomplete="off">
             <div id="svcList"></div>
@@ -722,20 +760,32 @@ function renderSettings() {
     const theirs = (state.users[m.uid]?.services || []).map((id) => allServices?.find((p) => p.id === id)?.name).filter(Boolean);
     return theirs.length ? `<p class="muted small">${esc(m.name)} has: ${esc(theirs.join(", "))}</p>` : "";
   }).join("");
-  const serviceBtn = (p) => `
-    <button class="svc ${mine.has(p.id) ? "on" : ""}" data-action="toggleService" data-pid="${p.id}">
+  const me = state.users[state.user.uid] || {};
+  const myForeign = me.foreign || [];
+  const isOn = (p, r) => (r === CONFIG.region ? mine.has(p.id) : myForeign.some((f) => f.r === r && f.id === p.id));
+  const serviceBtn = (p, r) => `
+    <button class="svc ${isOn(p, r) ? "on" : ""}" data-action="toggleService" data-pid="${p.id}" data-r="${r}">
       ${p.logo ? `<img src="${img(p.logo, "w92")}" alt="">` : `<span class="nologo"></span>`}
-      <span>${esc(p.name)}</span>
-      <span class="check">${mine.has(p.id) ? "✓" : ""}</span>
+      <span>${esc(p.name)}${r !== CONFIG.region ? ` (${r})` : ""}</span>
+      <span class="check">${isOn(p, r) ? "✓" : ""}</span>
     </button>`;
+  // Everything you have picked, from all countries
+  const pickedAll = [
+    ...(allServices || []).filter((p) => mine.has(p.id)).map((p) => serviceBtn(p, CONFIG.region)),
+    ...myForeign.map((f) => serviceBtn({ id: f.id, name: f.name, logo: f.logo }, f.r)),
+  ];
+  const regionList = regionServices[svcRegion];
   const q = svcQuery.trim().toLowerCase();
-  const list = (allServices || []).filter((p) => !q || p.name.toLowerCase().includes(q));
-  const picked = list.filter((p) => mine.has(p.id));
-  const rest = list.filter((p) => !mine.has(p.id));
-  $("#svcList").innerHTML = !allServices ? `<div class="splash small"><div class="spinner"></div></div>` : `
-    ${picked.length ? `<h4 class="muted small">Your services (${mine.size})</h4><div class="svc-list">${picked.map(serviceBtn).join("")}</div>` : ""}
-    ${rest.length ? `<h4 class="muted small">${q ? "Matching services" : "All services in Sweden"}</h4><div class="svc-list">${rest.map(serviceBtn).join("")}</div>` : ""}
-    ${!list.length ? `<p class="muted">No service matches “${esc(svcQuery)}”.</p>` : ""}`;
+  const list = Array.isArray(regionList) ? regionList.filter((p) => !isOn(p, svcRegion) && (!q || p.name.toLowerCase().includes(q))) : [];
+  const regionName = REGIONS.find(([k]) => k === svcRegion)?.[1] || svcRegion;
+  $("#svcList").innerHTML = `
+    ${pickedAll.length ? `<h4 class="muted small">Your services (${pickedAll.length})</h4><div class="svc-list">${pickedAll.join("")}</div>` : ""}
+    <h4 class="muted small">Services in</h4>
+    <div class="chips">${REGIONS.map(([k, l]) => `<button class="chip ${svcRegion === k ? "on" : ""}" data-action="svcRegion" data-r="${k}">${l}</button>`).join("")}</div>
+    ${svcRegion !== CONFIG.region ? `<p class="muted small">Pick a service here if you can use it from Sweden, for example through a library card. Movies and series then show it when it has them in ${esc(regionName)}.</p>` : ""}
+    ${!Array.isArray(regionList) ? `<div class="splash small"><div class="spinner"></div></div>`
+      : list.length ? `<div class="svc-list">${list.map((p) => serviceBtn(p, svcRegion)).join("")}</div>`
+      : `<p class="muted">${q ? `No service matches “${esc(svcQuery)}”.` : "No more services here."}</p>`}`;
 }
 
 function sheetHeader(show) {
@@ -759,18 +809,13 @@ function sheetHeader(show) {
 
 function providersSection(show, services = ourServices(), title = "Where can we watch it?") {
   const prov = show.providers || {};
-  const { ours, others } = splitProviders(show, services);
-  const filtered = !!services;
+  const { ours } = splitProviders(show, services);
   return `
         <section>
           <h3>${title}</h3>
           ${ours.length
             ? `<div class="providers">${ours.map((p) => `<div class="prov">${p.logo ? `<img src="${img(p.logo, "w92")}" alt="">` : ""}<span>${esc(p.name)}</span></div>`).join("")}</div>`
-            : filtered && others.length
-              ? `<p class="muted">Not on any of your services.</p>`
-              : `<p class="muted">Not included in any streaming service in Sweden right now.</p>`}
-          ${others.length ? `<p class="muted small">Also on: ${others.map((p) => esc(p.name)).join(", ")}</p>` : ""}
-          ${prov.rent?.length ? `<p class="muted small">Rent/buy: ${prov.rent.map((p) => esc(p.name)).join(", ")}</p>` : ""}
+            : `<p class="muted">${services ? "Not on any of your services right now." : "Not included in any streaming service right now."}</p>`}
           ${prov.link ? `<a class="small" href="${esc(prov.link)}" target="_blank" rel="noopener">See all options ↗</a>` : ""}
           <p class="attribution">Streaming info from JustWatch · updated ${fmtDate(show.fetchedAt)}</p>
         </section>`;
@@ -934,23 +979,29 @@ async function fetchMovieData(id) {
     imdbId: d.imdb_id || null,
     trailer: trailer?.key || null,
     providers: {
-      stream: providerList(wp.flatrate, wp.free, wp.ads),
+      stream: streamList(d),
       rent: providerList(wp.rent, wp.buy),
       link: wp.link || null,
     },
     lang: CONFIG.language,
+    foreignKey: foreignKey(),
     dataV: MOVIE_DATA_V,
     fetchedAt: Date.now(),
   };
 }
-const movieNeedsRefresh = (m, maxAge) => Date.now() - (m.fetchedAt || 0) > maxAge || m.lang !== CONFIG.language || m.dataV !== MOVIE_DATA_V;
+const movieNeedsRefresh = (m, maxAge) => Date.now() - (m.fetchedAt || 0) > maxAge || m.lang !== CONFIG.language || m.dataV !== MOVIE_DATA_V
+  || (m.foreignKey || "") !== foreignKey();
 const movieOnly = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !PERSONAL_FIELDS.includes(k) && k !== "interest" && !k.startsWith("suggested")));
 
 const myMovieRef = (id) => doc(db, "users", state.user.uid, "movies", String(id));
 const sharedRef = (id) => doc(db, "sharedMovies", String(id));
 const myMovie = (id) => state.movies.find((m) => String(m.tmdbId) === String(id));
 const sharedMovie = (id) => state.shared.find((m) => String(m.tmdbId) === String(id));
-const myServices = () => { const s = state.users[state.user?.uid]?.services || []; return s.length ? new Set(s) : null; };
+const myServices = () => {
+  const u = state.users[state.user?.uid] || {};
+  const s = [...(u.services || []), ...(u.foreign || []).map((f) => f.id)];
+  return s.length ? new Set(s) : null;
+};
 const onServices = (m, set) => (m.providers?.stream || []).some((p) => set.has(p.id));
 const otherNames = () => members().filter((m) => m.uid !== state.user.uid).map((m) => m.name).join(" & ");
 const myPendingMovies = () => state.shared.filter((m) => m.status === "want" && awaitsMyVote(m));
@@ -966,7 +1017,7 @@ let refreshedMovies = false;
 // Streaming availability changes, so refresh watchlist movies about once a week (a few per start).
 async function refreshStaleMovies() {
   const stale = state.movies.filter((m) => m.status === "want" && movieNeedsRefresh(m, 7 * DAY));
-  for (const m of stale.slice(0, 25)) {
+  for (const m of stale.slice(0, 200)) {
     try { await updateDoc(myMovieRef(m.tmdbId), await fetchMovieData(m.tmdbId)); } catch {}
   }
 }
@@ -1412,13 +1463,26 @@ document.addEventListener("click", async (e) => {
     case "logout": if (settingsOpen) history.back(); return signOut(auth);
     case "menu": return openSettings();
     case "toggleService": {
-      const pid = Number(t.dataset.pid);
-      const cur = state.users[state.user.uid]?.services || [];
-      const next = cur.includes(pid) ? cur.filter((x) => x !== pid) : [...cur, pid];
-      state.users[state.user.uid] = { ...state.users[state.user.uid], services: next };
+      const pid = Number(t.dataset.pid), r = t.dataset.r || CONFIG.region;
+      const me = state.users[state.user.uid] || {};
+      let patch;
+      if (r === CONFIG.region) {
+        const cur = me.services || [];
+        patch = { services: cur.includes(pid) ? cur.filter((x) => x !== pid) : [...cur, pid] };
+      } else {
+        const cur = me.foreign || [];
+        const has = cur.some((f) => f.r === r && f.id === pid);
+        const p = (regionServices[r] || []).find?.((x) => x.id === pid);
+        patch = { foreign: has ? cur.filter((f) => !(f.r === r && f.id === pid)) : [...cur, { r, id: pid, name: p?.name || "?", logo: p?.logo || null }] };
+      }
+      state.users[state.user.uid] = { ...me, ...patch };
       renderSettings();
-      return updateDoc(doc(db, "users", state.user.uid), { services: next }).catch((err) => toast("Could not save: " + err.message));
+      await updateDoc(doc(db, "users", state.user.uid), patch).catch((err) => toast("Could not save: " + err.message));
+      // A new foreign service means stored streaming info must be fetched again.
+      if (patch.foreign) { refreshStale(); refreshStaleMovies(); toast("Updating streaming info…"); }
+      return;
     }
+    case "svcRegion": svcRegion = t.dataset.r; loadRegionServices(svcRegion); return renderSettings();
     case "tab":
       if (state.mode === "movies") { state.mtab = t.dataset.tab; localStorage.setItem("mtab", state.mtab); }
       else { state.tab = t.dataset.tab; localStorage.setItem("tab", state.tab); }
