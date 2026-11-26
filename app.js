@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v40";
+const APP_VERSION = "v41";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -347,6 +347,11 @@ const K = {
 };
 const KINDS = ["tv", "movie"];
 const titleOf = (x) => x.name || x.title || "";
+const languageName = (() => {
+  let dn = null;
+  try { dn = new Intl.DisplayNames(["en"], { type: "language" }); } catch {}
+  return (code) => { try { return (dn && code && dn.of(code)) || code; } catch { return code; } };
+})();
 // The year to show: the one from your Letterboxd export if there is one, else the first time it was shown.
 const yearShown = (x) => x.lbYear || x.year || "";
 const PERSONAL_FIELDS = ["status", "addedAt", "seenAt", "myRating", "review", "lbYear", "suggested", "importKey", "tags", "where", "note", "progress", "updatedAt"];
@@ -360,22 +365,22 @@ const kwOf = (x) => new Set((x.keywords || []).map((k) => k.toLowerCase()));
 const gOf = (x) => new Set(x.genres || []);
 const any = (set, list) => list.some((v) => set.has(v));
 const MOODS = {
-  feelgood: { label: "Feelgood 😊", test: (x, g, k) =>
+  feelgood: { label: "Feelgood", test: (x, g, k) =>
     (any(g, ["Comedy", "Family", "Romance", "Animation", "Music", "Kids"]) || any(k, ["feel-good", "heartwarming", "witty", "lighthearted", "whimsical", "hopeful", "inspirational", "joyful", "playful", "comforting", "cheerful", "amused", "hilarious", "sweet"]))
     && !any(g, ["Horror", "War", "Thriller", "War & Politics"]) && !any(k, ["tragic", "gore", "slasher", "grief"]) },
-  artsy: { label: "Artsy fartsy 🎨", test: (x, g, k) =>
+  artsy: { label: "Artsy fartsy", test: (x, g, k) =>
     (x.tags || []).some((t) => /^GFF/.test(t)) || (g.has("Drama") && ((x.originalLanguage && x.originalLanguage !== "en") || (x.voteCount != null && x.voteCount < 300))) },
-  bang: { label: "Bang bang 💥", test: (x, g, k) =>
+  bang: { label: "Bang bang", test: (x, g, k) =>
     any(g, ["Action", "Thriller", "War", "Western", "Action & Adventure", "War & Politics"]) || any(k, ["intense", "shootout", "heist", "gunfight", "martial arts", "car chase", "assassin", "explosion"]) },
-  costume: { label: "Costume drama 👒", test: (x, g, k) =>
+  costume: { label: "Costume drama", test: (x, g, k) =>
     any(k, ["period drama", "costume drama", "16th century", "17th century", "18th century", "19th century", "victorian era", "georgian or regency era", "regency era", "edwardian era", "tudor", "historical drama"])
     || (g.has("History") && any(g, ["Drama", "Romance"])) },
-  scary: { label: "Scary 👻", test: (x, g, k) =>
+  scary: { label: "Scary", test: (x, g, k) =>
     g.has("Horror") || any(k, ["supernatural", "haunted house", "ghost", "possession", "slasher", "creepy", "eerie", "menacing", "gore"]) },
-  whodunit: { label: "Whodunit 🔍", test: (x, g, k) =>
+  whodunit: { label: "Whodunit", test: (x, g, k) =>
     (g.has("Mystery") && g.has("Crime")) || any(k, ["murder mystery", "whodunit", "detective", "amateur detective", "investigation"]) },
-  forreal: { label: "For real 🎤", test: (x, g) => g.has("Documentary") },
-  worlds: { label: "Other worlds 🚀", test: (x, g) => any(g, ["Science Fiction", "Fantasy", "Sci-Fi & Fantasy"]) },
+  forreal: { label: "For real", test: (x, g) => g.has("Documentary") },
+  worlds: { label: "Other worlds", test: (x, g) => any(g, ["Science Fiction", "Fantasy", "Sci-Fi & Fantasy"]) },
 };
 const moodsOf = (x) => { const g = gOf(x), k = kwOf(x); return Object.keys(MOODS).filter((m) => MOODS[m].test(x, g, k)); };
 // Series: a limited series tells one story in one season; finished means no more seasons are coming
@@ -668,8 +673,7 @@ async function refreshStale() {
   }
   // A few per start keeps mobile data use low. Series you are watching come first.
   jobs.sort((a, b) => (a[0] === "tv" ? 0 : 1) - (b[0] === "tv" ? 0 : 1));
-  if (navigator.connection?.saveData) return;
-  for (const [kind, scope, id] of jobs.slice(0, 25)) {
+  for (const [kind, scope, id] of jobs.slice(0, 100)) {
     try {
       const d = await K[kind].fetch(id);
       const x = get(kind, scope, id);
@@ -690,8 +694,8 @@ function arrivedPatch(x, stream) {
   return arrived.length ? { newOn: { names: arrived.map((p) => p.name), at: Date.now() } } : {};
 }
 async function checkNewOnServices() {
-  if (!myServices() || navigator.connection?.saveData) return;
-  const n = navigator.connection?.type === "cellular" ? 10 : 60;
+  if (!myServices()) return;
+  const n = 200;
   const todo = KINDS.flatMap((kind) => list(kind, "mine").filter((x) => x.status === "want" && Date.now() - (x.provCheckedAt || 0) > 3 * DAY).map((x) => [kind, x]))
     .sort((a, b) => (a[1].provCheckedAt || 0) - (b[1].provCheckedAt || 0)).slice(0, n);
   for (const [kind, x] of todo) {
@@ -702,14 +706,14 @@ async function checkNewOnServices() {
     } catch {}
   }
   const news = newOnServices();
-  if (news.length) toast(`🎉 ${news.length} ${news.length === 1 ? "thing" : "things"} from your watchlist ${news.length === 1 ? "is" : "are"} now on your services`);
+  if (news.length) toast(`${news.length} ${news.length === 1 ? "thing" : "things"} from your watchlist ${news.length === 1 ? "is" : "are"} now on your services`);
 }
 const newOnServices = () => KINDS.flatMap((kind) => list(kind, "mine").filter((x) => x.status === "want" && x.newOn).map((x) => [kind, x]));
 function newsBanner(kind) {
   const news = newOnServices().filter(([k]) => k === kind);
   if (!news.length) return "";
   return `<section class="news card">
-    <h3>🎉 New on your services <button class="btn link small" data-action="dismissNews" data-kind="${kind}">Dismiss</button></h3>
+    <h3>New on your services <button class="btn link small" data-action="dismissNews" data-kind="${kind}">Dismiss</button></h3>
     <ul>${news.map(([k, x]) => `<li data-action="open" data-kind="${k}" data-id="${x.tmdbId}"><b>${esc(titleOf(x))}</b> <span class="muted">on ${esc(x.newOn.names.join(", "))}</span></li>`).join("")}</ul>
   </section>`;
 }
@@ -1329,6 +1333,8 @@ function renderSheet() {
     x.creators?.length && `<div><span class="muted">Created by</span> ${esc(x.creators.join(", "))}</div>`,
     x.networks?.length && `<div><span class="muted">Network</span> ${esc(x.networks.join(", "))}</div>`,
     (x.originalTitle || x.originalName) && `<div><span class="muted">Original title</span> ${esc(x.originalTitle || x.originalName)}</div>`,
+    x.originalLanguage && `<div><span class="muted">Language</span> ${esc(languageName(x.originalLanguage))}</div>`,
+    kind === "movie" && x.country && `<div><span class="muted">Country</span> ${esc(countryName(x.country))}</div>`,
     kind === "tv" && totalText(x) && `<div><span class="muted">Length</span> ${totalText(x)}${x.nextAir ? " so far" : ""}</div>`,
     kind === "movie" && (x.firstShown || x.releaseDate) && `<div><span class="muted">First shown</span> ${fmtDate(x.firstShown || x.releaseDate)}</div>`,
     mine?.where && mine.status !== "seen" && `<div><span class="muted">Watched at</span> ${esc(mine.where)}</div>`,
