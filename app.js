@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v19";
+const APP_VERSION = "v20";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -373,6 +373,7 @@ function startListening() {
     render();
   }, moviesFailed));
   renderShell();
+  importFromLink();
 }
 
 // Fetch new episodes and streaming info for active shows (at most once a day, or when the language changed).
@@ -1561,6 +1562,25 @@ async function importOne(item, byId) {
   byId.set(id, doc_);
   await setDoc(myMovieRef(id), doc_);
   imp.added++;
+}
+
+// An import link (#import=<gzip+base64url JSON>) opens Settings with the import ready to start.
+// The part after # never leaves the browser, so the data is not sent to the web server.
+async function importFromLink() {
+  if (!location.hash.startsWith("#import=")) return;
+  const b64 = location.hash.slice(8).replace(/-/g, "+").replace(/_/g, "/");
+  history.replaceState(null, "", location.pathname + location.search);
+  try {
+    const bytes = Uint8Array.from(atob(b64 + "===".slice((b64.length + 3) % 4)), (c) => c.charCodeAt(0));
+    const text = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+    const data = JSON.parse(text);
+    if (data.kind !== "serielistan-movie-import") throw new Error("not an import link");
+    imp.items = data.items;
+    state.mode = "movies";
+    localStorage.setItem("mode", "movies");
+    renderShell();
+    openSettings();
+  } catch (err) { toast("Could not read the import link: " + err.message); }
 }
 
 async function runImport() {
