@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v34";
+const APP_VERSION = "v35";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -478,6 +478,7 @@ function startListening() {
     state.users = {};
     snap.forEach((d) => (state.users[d.id] = d.data()));
     render();
+    if (allLoaded()) scheduleOverlap();
   }, renderNoAccess));
   for (const kind of KINDS) {
     for (const scope of ["mine", "ours"]) {
@@ -500,8 +501,57 @@ function startListening() {
 const allLoaded = () => KINDS.every((k) => state.loaded[k].mine && state.loaded[k].ours) && !KINDS.some((k) => state.err[k]);
 
 // Runs after every data update: one-time clean-ups, then syncing of things watched together.
+// ---------- Overlap: things the other person also has on their watchlist ----------
+// Each person's app publishes coded ids (not titles) of what is on their own watchlist, in users/{uid}.wl.
+// Another app can only ask "is this item on it?" for items it has itself; it cannot list yours.
+const hashCache = new Map();
+async function wlHash(uid, kind, id) {
+  const key = `${uid}:${kind}:${id}`;
+  if (hashCache.has(key)) return hashCache.get(key);
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+  const h = [...new Uint8Array(buf).slice(0, 6)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  hashCache.set(key, h);
+  return h;
+}
+const alsoOn = new Map(); // "kind:id" -> names of others who have it on their watchlist
+const othersWith = (kind, id) => alsoOn.get(`${kind}:${id}`) || [];
+let overlapTimer = null;
+function scheduleOverlap() { clearTimeout(overlapTimer); overlapTimer = setTimeout(updateOverlap, 1500); }
+async function updateOverlap() {
+  if (!crypto?.subtle || !state.user) return;
+  const uid = state.user.uid;
+  const mineWant = KINDS.flatMap((kind) => list(kind, "mine").filter((x) => x.status === "want").map((x) => [kind, x.tmdbId]));
+  // Publish mine
+  const my = (await Promise.all(mineWant.map(([k, id]) => wlHash(uid, k, id)))).sort();
+  const cur = state.users[uid]?.wl || [];
+  if (my.join() !== [...cur].sort().join()) updateDoc(doc(db, "users", uid), { wl: my }).catch(() => {});
+  // Check the others' lists for what I have
+  alsoOn.clear();
+  for (const m of members().filter((mb) => mb.uid !== uid)) {
+    const theirs = new Set(state.users[m.uid]?.wl || []);
+    if (!theirs.size) continue;
+    for (const [k, id] of mineWant) {
+      if (theirs.has(await wlHash(m.uid, k, id))) alsoOn.set(`${k}:${id}`, [...(alsoOn.get(`${k}:${id}`) || []), m.name]);
+    }
+  }
+  render();
+}
+// After adding something: does someone else have it too? Then offer to suggest it right away.
+async function checkOverlapAfterAdd(kind, id, data) {
+  const title = titleOf(data);
+  if (!crypto?.subtle || get(kind, "ours", id)) return;
+  for (const m of members().filter((mb) => mb.uid !== state.user.uid)) {
+    const theirs = state.users[m.uid]?.wl || [];
+    if (theirs.includes(await wlHash(m.uid, kind, id))) {
+      if (confirm(`${m.name} also has ${title} on their watchlist. Suggest it to watch together?`)) await suggest(kind, id, data);
+      return;
+    }
+  }
+}
+
 function afterLoad() {
   if (!allLoaded()) return;
+  scheduleOverlap();
   if (!startedBackgroundWork) {
     startedBackgroundWork = true;
     migrate().then(() => refreshStale());
@@ -594,15 +644,16 @@ async function addMine(kind, id, data) {
     const extra = kind === "tv" ? { progress: { s: 0, e: 0 }, updatedAt: Date.now() } : {};
     await setDoc(ref(kind, "mine", id), { ...baseData(data), status: "want", addedAt: Date.now(), ...extra });
     toast(`${titleOf(data)} added to your watchlist`);
+    checkOverlapAfterAdd(kind, id, data);
   } catch (err) { toast("Could not add: " + err.message); }
 }
 
-async function suggest(kind, id) {
+async function suggest(kind, id, data = null) {
   const uid = state.user.uid;
-  const base = get(kind, "mine", id) || (String(state.preview?.tmdbId) === String(id) ? state.preview : null);
+  const base = get(kind, "mine", id) || data || (String(state.preview?.tmdbId) === String(id) ? state.preview : null);
   if (!base) return;
   try {
-    if (!get(kind, "mine", id)) await addMine(kind, id, base);
+    if (!get(kind, "mine", id) && !data) await addMine(kind, id, base);
     const extra = kind === "tv" ? { progress: { s: 0, e: 0 }, updatedAt: Date.now() } : {};
     await setDoc(ref(kind, "ours", id), {
       ...baseData(base), status: "want", interest: { [uid]: 2 }, suggestedBy: uid, suggestedAt: Date.now(), addedAt: Date.now(), ...extra,
@@ -731,6 +782,8 @@ function card(kind, x, scope, { skip = false, label = null } = {}) {
     extra = interestRow(x);
   } else if (scope === "mine" && x.status === "want" && get(kind, "ours", id)) {
     pills.push(`<span class="pill later">Suggested</span>`);
+  } else if (scope === "mine" && x.status === "want" && othersWith(kind, id).length) {
+    pills.push(`<span class="pill good">${esc(othersWith(kind, id).join(" & "))} too</span>`);
   }
   if (x.status === "watching" && kind === "tv") {
     const n = nextEp(x);
@@ -793,6 +846,8 @@ function renderWatchlist(kind) {
   if (q) items = items.filter((x) => [titleOf(x), x.originalTitle, x.originalName, ...(x.directors || []), ...(x.creators || [])].filter(Boolean).join(" ").toLowerCase().includes(q));
   if (f.onServices && svc) items = items.filter((x) => onServices(x, svc));
   if (f.tag) items = items.filter((x) => x.tags?.includes(f.tag));
+  if (f.both) items = items.filter((x) => othersWith(kind, x.tmdbId).length && !get(kind, "ours", x.tmdbId));
+  const anyBoth = all.some((x) => othersWith(kind, x.tmdbId).length && !get(kind, "ours", x.tmdbId));
   const tags = [...new Set(all.flatMap((x) => x.tags || []))].sort((a, b) => a.localeCompare(b));
   const by = {
     added: (a, b) => (b.addedAt || 0) - (a.addedAt || 0),
@@ -807,6 +862,7 @@ function renderWatchlist(kind) {
       <div class="ctl-row">
         <span class="ctl-label">Filter</span>
         ${svc ? `<button class="chip ${f.onServices ? "on" : ""}" data-action="onServices">On my services</button>` : ""}
+        ${anyBoth || f.both ? `<button class="chip ${f.both ? "on" : ""}" data-action="bothFilter">Also on ${esc(otherNames())}'s list</button>` : ""}
         ${tags.length ? `<select data-change="tagFilter" aria-label="Filter by label" class="${f.tag ? "on" : ""}">
           <option value="">All labels</option>
           ${tags.map((tg) => `<option value="${esc(tg)}" ${f.tag === tg ? "selected" : ""}>${esc(tg)}</option>`).join("")}
@@ -1109,6 +1165,7 @@ function renderSheet() {
     ourBlock = `
       <section>
         <h3>Watch together?</h3>
+        ${othersWith(kind, id).length ? `<p class="small">💡 <b>${esc(othersWith(kind, id).join(" & "))}</b> also has this on their watchlist.</p>` : ""}
         <button class="btn wide" data-action="suggest">👥 Suggest to ${esc(others || "watch together")}</button>
         <p class="muted small">Only this ${K[kind].noun} is shared. The rest of your lists stay private.</p>
       </section>`;
@@ -1716,7 +1773,7 @@ function topList(vs, keyFn, n = 5) {
   for (const v of vs) for (const k of [].concat(keyFn(v.m) || [])) if (k) c.set(k, (c.get(k) || 0) + 1);
   return [...c.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))).slice(0, n);
 }
-const statsState = { year: null }; // null = all years
+const statsState = { year: new Date().getFullYear() }; // null = all years
 
 function renderStats() {
   const main = $("#main");
@@ -2005,6 +2062,7 @@ document.addEventListener("click", async (e) => {
     // Lists and filters
     case "sort": f.sort = t.dataset.k; f.limit = 60; return render();
     case "onServices": f.onServices = !f.onServices; f.limit = 60; return render();
+    case "bothFilter": f.both = !f.both; f.limit = 60; return render();
     case "tag": f.tag = f.tag === t.dataset.k ? null : t.dataset.k; f.limit = 60; return render();
     case "more": f.limit += 60; return render();
     case "watchedMore": state.watchedLimit += 60; return render();
