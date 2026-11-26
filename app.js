@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v42";
+const APP_VERSION = "v43";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -389,6 +389,10 @@ const MOODS = {
 };
 const moodsOf = (x) => { const g = gOf(x), k = kwOf(x); return Object.keys(MOODS).filter((m) => MOODS[m].test(x, g, k)); };
 // Series: a limited series tells one story in one season; finished means no more seasons are coming
+// Language: Swedish and English are understood; everything else needs subtitles
+const UNDERSTOOD = ["sv", "en"];
+const LANGS = [["any", "Any language"], ["understood", "Swedish or English"], ["subtitled", "Subtitled"]];
+const langOk = (x, v) => v === "any" || !v || (x.originalLanguage && (v === "understood") === UNDERSTOOD.includes(x.originalLanguage));
 const isLimited = (x) => x.tvType === "Miniseries" || (x.tvType == null && x.ended && seasonsOf(x).length === 1);
 const TIMES = {
   movie: [["any", "Any length"], ["90", "Under 90 min"], ["120", "Under 2 h"]],
@@ -419,7 +423,7 @@ const SCOPE_LABEL = { mine: "My stuff", ours: "Our stuff" };
 // ---------- State ----------
 const savedMode = localStorage.getItem("mode");
 const newFilters = () => ({ q: "", onServices: false, sort: "added", limit: 60, tag: null });
-const newPick = () => ({ open: false, time: "any", moods: [], limited: false, finished: false, results: null, skipped: new Set() });
+const newPick = () => ({ open: false, time: "any", lang: "any", moods: [], limited: false, finished: false, results: null, skipped: new Set() });
 const state = {
   user: null,
   users: {}, // uid -> {name, services, foreign}
@@ -958,6 +962,7 @@ function renderWatchlist(kind) {
   if (f.onServices && svc) items = items.filter((x) => onServices(x, svc));
   if (f.tag) items = items.filter((x) => x.tags?.includes(f.tag));
   if (f.both) items = items.filter((x) => othersWith(kind, x.tmdbId).length && !get(kind, "ours", x.tmdbId));
+  if (f.lang && f.lang !== "any") items = items.filter((x) => langOk(x, f.lang));
   const genres = (f.genres || []).filter(Boolean);
   if (genres.length) items = items.filter((x) => hasGenres(x, genres));
   const anyBoth = all.some((x) => othersWith(kind, x.tmdbId).length && !get(kind, "ours", x.tmdbId));
@@ -985,6 +990,7 @@ function renderWatchlist(kind) {
         ${svc ? `<button class="chip ${f.onServices ? "on" : ""}" data-action="onServices">On my services</button>` : ""}
         ${anyBoth || f.both ? `<button class="chip ${f.both ? "on" : ""}" data-action="bothFilter">Also on ${esc(otherNames())}'s list</button>` : ""}
         ${genreSelects(all, f.genres || [], "genre")}
+        <select data-change="lang" aria-label="Language" class="${f.lang && f.lang !== "any" ? "on" : ""}">${LANGS.map(([v, l]) => `<option value="${v}" ${(f.lang || "any") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
         ${tags.length ? `<select data-change="tagFilter" aria-label="Filter by label" class="${f.tag ? "on" : ""}">
           <option value="">All labels</option>
           ${tags.map((tg) => `<option value="${esc(tg)}" ${f.tag === tg ? "selected" : ""}>${esc(tg)}</option>`).join("")}
@@ -1035,6 +1041,7 @@ function pickCandidates(kind, scope) {
     if (p.skipped.has(x.tmdbId)) return false;
     const len = lengthOf(kind, x);
     if (p.time !== "any" && !(len && len <= Number(p.time))) return false;
+    if (!langOk(x, p.lang)) return false;
     if (p.moods.length) { const ms = moodsOf(x); if (!p.moods.every((m) => ms.includes(m))) return false; }
     if (kind === "tv" && p.limited && !isLimited(x)) return false;
     if (kind === "tv" && p.finished && !x.ended) return false;
@@ -1066,6 +1073,8 @@ function renderPick(kind, scope) {
       <h3>Help me pick <button class="btn link small" data-action="pickClose">Close</button></h3>
       <div class="pick-label">How much time?</div>
       <div class="chips">${TIMES[kind].map(([v, l]) => chip("time", v, l)).join("")}</div>
+      <div class="pick-label">Language?</div>
+      <div class="chips">${LANGS.map(([v, l]) => chip("lang", v, l.replace("Any language", "Any"))).join("")}</div>
       <div class="pick-label">What mood?</div>
       <div class="chips"><button class="chip ${p.moods.length ? "" : "on"}" data-action="pickMood" data-v="">Anything</button>${Object.entries(MOODS).map(([k, m]) => `<button class="chip ${p.moods.includes(k) ? "on" : ""}" data-action="pickMood" data-v="${k}">${m.label}</button>`).join("")}</div>
       ${kind === "tv" ? `<div class="pick-label">What kind?</div><div class="chips">
@@ -2081,6 +2090,7 @@ document.addEventListener("change", (e) => {
   if (t.dataset.change === "sort") { f.sort = t.value; if (f.sort === "random") shuffleKey.clear(); }
   if (t.dataset.change === "tagFilter") f.tag = t.value || null;
   if (t.dataset.change === "watchedTag") f.watchedTag = t.value || null;
+  if (t.dataset.change === "lang") f.lang = t.value;
   if (t.dataset.change === "genre" || t.dataset.change === "watchedGenre") {
     const key = t.dataset.change === "genre" ? "genres" : "watchedGenres";
     const gs = [...(f[key] || [])];
