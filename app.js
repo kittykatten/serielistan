@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v39";
+const APP_VERSION = "v40";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -122,7 +122,7 @@ function providerList(...lists) {
 }
 
 // Bump when fetchShowData stores new fields, so saved shows are fetched again.
-const DATA_V = 2;
+const DATA_V = 3; // 3: series type (limited), keywords and language for moods
 const needsRefresh = (s, maxAge) => Date.now() - (s.fetchedAt || 0) > maxAge || s.lang !== CONFIG.language || s.dataV !== DATA_V
   || (s.foreignKey || "") !== foreignKey();
 
@@ -164,7 +164,7 @@ async function fetchRuntimes(id, seasons) {
 }
 
 async function fetchShowData(id) {
-  const d = await tmdb(`/tv/${id}`, { append_to_response: "watch/providers,aggregate_credits,external_ids,videos" });
+  const d = await tmdb(`/tv/${id}`, { append_to_response: "watch/providers,aggregate_credits,external_ids,videos,keywords" });
   let overview = d.overview;
   if (!overview) {
     try { overview = (await tmdb(`/tv/${id}`, { language: "en-US" })).overview; } catch {}
@@ -194,6 +194,9 @@ async function fetchShowData(id) {
     seasons,
     runtime: d.episode_run_time?.[0] || d.last_episode_to_air?.runtime || null,
     creators: (d.created_by || []).map((c) => c.name),
+    tvType: d.type || null,
+    keywords: (d.keywords?.results || []).map((k) => k.name).slice(0, 40),
+    originalLanguage: d.original_language || null,
     networks: (d.networks || []).map((n) => n.name),
     cast: (d.aggregate_credits?.cast || []).slice(0, 15).map((c) => ({
       id: c.id, name: c.name, profile: c.profile_path || null,
@@ -280,7 +283,7 @@ function timeLeft(show) {
 }
 
 async function fetchMovieData(id) {
-  const d = await tmdb(`/movie/${id}`, { append_to_response: "watch/providers,credits,videos,release_dates" });
+  const d = await tmdb(`/movie/${id}`, { append_to_response: "watch/providers,credits,videos,release_dates,keywords" });
   // The year a movie was first shown anywhere (festival premiere included), as Letterboxd and IMDb show it.
   // TMDB's own release date is often the later cinema release in the home country.
   const firstShown = (d.release_dates?.results || []).flatMap((c) => c.release_dates || []).map((r) => r.release_date).filter(Boolean).sort()[0];
@@ -309,6 +312,8 @@ async function fetchMovieData(id) {
       id: c.id, name: c.name, profile: c.profile_path || null, character: c.character || "",
     })),
     imdbId: d.imdb_id || null,
+    keywords: (d.keywords?.keywords || []).map((k) => k.name).slice(0, 40),
+    originalLanguage: d.original_language || null,
     country: (d.origin_country || [])[0] || d.production_countries?.[0]?.iso_3166_1 || null,
     trailer: trailer?.key || null,
     providers: {
@@ -349,15 +354,35 @@ const SHARED_FIELDS = ["interest", "suggestedBy", "suggestedAt", "addedBy", "add
 // Only the TMDB data of an item, without anyone's personal or shared fields.
 const baseData = (x) => Object.fromEntries(Object.entries(x).filter(([k]) => !PERSONAL_FIELDS.includes(k) && !SHARED_FIELDS.includes(k)));
 
+// Moods are worked out from TMDB genres and keywords, the original language and your GFF labels.
+// A movie or series can have several moods. Picking several moods narrows the choice: all must match.
+const kwOf = (x) => new Set((x.keywords || []).map((k) => k.toLowerCase()));
+const gOf = (x) => new Set(x.genres || []);
+const any = (set, list) => list.some((v) => set.has(v));
 const MOODS = {
-  light: { label: "Light & fun", genres: ["Comedy", "Animation", "Family", "Romance", "Music", "Kids"] },
-  tense: { label: "Tense", genres: ["Thriller", "Horror", "Crime", "Mystery"] },
-  epic: { label: "Big & epic", genres: ["Action", "Adventure", "Science Fiction", "Fantasy", "War", "Western", "Action & Adventure", "Sci-Fi & Fantasy", "War & Politics"] },
-  deep: { label: "Deep", genres: ["Drama", "History", "Documentary"] },
+  feelgood: { label: "Feelgood 😊", test: (x, g, k) =>
+    (any(g, ["Comedy", "Family", "Romance", "Animation", "Music", "Kids"]) || any(k, ["feel-good", "heartwarming", "witty", "lighthearted", "whimsical", "hopeful", "inspirational", "joyful", "playful", "comforting", "cheerful", "amused", "hilarious", "sweet"]))
+    && !any(g, ["Horror", "War", "Thriller", "War & Politics"]) && !any(k, ["tragic", "gore", "slasher", "grief"]) },
+  artsy: { label: "Artsy fartsy 🎨", test: (x, g, k) =>
+    (x.tags || []).some((t) => /^GFF/.test(t)) || (g.has("Drama") && ((x.originalLanguage && x.originalLanguage !== "en") || (x.voteCount != null && x.voteCount < 300))) },
+  bang: { label: "Bang bang 💥", test: (x, g, k) =>
+    any(g, ["Action", "Thriller", "War", "Western", "Action & Adventure", "War & Politics"]) || any(k, ["intense", "shootout", "heist", "gunfight", "martial arts", "car chase", "assassin", "explosion"]) },
+  costume: { label: "Costume drama 👒", test: (x, g, k) =>
+    any(k, ["period drama", "costume drama", "16th century", "17th century", "18th century", "19th century", "victorian era", "georgian or regency era", "regency era", "edwardian era", "tudor", "historical drama"])
+    || (g.has("History") && any(g, ["Drama", "Romance"])) },
+  scary: { label: "Scary 👻", test: (x, g, k) =>
+    g.has("Horror") || any(k, ["supernatural", "haunted house", "ghost", "possession", "slasher", "creepy", "eerie", "menacing", "gore"]) },
+  whodunit: { label: "Whodunit 🔍", test: (x, g, k) =>
+    (g.has("Mystery") && g.has("Crime")) || any(k, ["murder mystery", "whodunit", "detective", "amateur detective", "investigation"]) },
+  forreal: { label: "For real 🎤", test: (x, g) => g.has("Documentary") },
+  worlds: { label: "Other worlds 🚀", test: (x, g) => any(g, ["Science Fiction", "Fantasy", "Sci-Fi & Fantasy"]) },
 };
+const moodsOf = (x) => { const g = gOf(x), k = kwOf(x); return Object.keys(MOODS).filter((m) => MOODS[m].test(x, g, k)); };
+// Series: a limited series tells one story in one season; finished means no more seasons are coming
+const isLimited = (x) => x.tvType === "Miniseries" || (x.tvType == null && x.ended && seasonsOf(x).length === 1);
 const TIMES = {
   movie: [["any", "Any length"], ["90", "Under 90 min"], ["120", "Under 2 h"]],
-  tv: [["any", "Any length"], ["300", "Under 5 h"], ["720", "Under 12 h"]],
+  tv: [["any", "Any length"], ["300", "Under 5 h"], ["600", "Under 10 h"]],
 };
 const SORTS = [
   ["added", "Recently added"], ["addedOld", "Added longest ago"],
@@ -384,7 +409,7 @@ const SCOPE_LABEL = { mine: "My stuff", ours: "Our stuff" };
 // ---------- State ----------
 const savedMode = localStorage.getItem("mode");
 const newFilters = () => ({ q: "", onServices: false, sort: "added", limit: 60, tag: null });
-const newPick = () => ({ open: false, time: "any", mood: "any", onServices: true, results: null, skipped: new Set() });
+const newPick = () => ({ open: false, time: "any", moods: [], limited: false, finished: false, results: null, skipped: new Set() });
 const state = {
   user: null,
   users: {}, // uid -> {name, services, foreign}
@@ -572,7 +597,7 @@ function afterLoad() {
   scheduleOverlap();
   if (!startedBackgroundWork) {
     startedBackgroundWork = true;
-    migrate().then(() => refreshStale());
+    migrate().then(() => refreshStale()).then(() => checkNewOnServices());
   }
   syncTogether();
 }
@@ -645,8 +670,48 @@ async function refreshStale() {
   jobs.sort((a, b) => (a[0] === "tv" ? 0 : 1) - (b[0] === "tv" ? 0 : 1));
   if (navigator.connection?.saveData) return;
   for (const [kind, scope, id] of jobs.slice(0, 25)) {
-    try { await updateDoc(ref(kind, scope, id), await K[kind].fetch(id)); } catch {}
+    try {
+      const d = await K[kind].fetch(id);
+      const x = get(kind, scope, id);
+      const extra = scope === "mine" && x ? { provCheckedAt: Date.now(), ...arrivedPatch(x, d.providers?.stream || []) } : {};
+      await updateDoc(ref(kind, scope, id), { ...d, ...extra });
+    } catch {}
   }
+}
+
+// ---------- New on your services ----------
+// Each time you open the app, a few watchlist items get their streaming info checked (small requests;
+// fewer on mobile data). When something has arrived on one of your services, you are told.
+function arrivedPatch(x, stream) {
+  const svc = myServices();
+  if (!svc || !x.provCheckedAt) return {}; // the first check only sets a starting point
+  const before = new Set((x.providers?.stream || []).filter((p) => svc.has(p.id)).map((p) => p.id));
+  const arrived = stream.filter((p) => svc.has(p.id) && !before.has(p.id));
+  return arrived.length ? { newOn: { names: arrived.map((p) => p.name), at: Date.now() } } : {};
+}
+async function checkNewOnServices() {
+  if (!myServices() || navigator.connection?.saveData) return;
+  const n = navigator.connection?.type === "cellular" ? 10 : 60;
+  const todo = KINDS.flatMap((kind) => list(kind, "mine").filter((x) => x.status === "want" && Date.now() - (x.provCheckedAt || 0) > 3 * DAY).map((x) => [kind, x]))
+    .sort((a, b) => (a[1].provCheckedAt || 0) - (b[1].provCheckedAt || 0)).slice(0, n);
+  for (const [kind, x] of todo) {
+    try {
+      const d = await tmdb(`/${K[kind].path}/${x.tmdbId}/watch/providers`);
+      const stream = streamList({ "watch/providers": d });
+      await updateDoc(ref(kind, "mine", x.tmdbId), { "providers.stream": stream, provCheckedAt: Date.now(), ...arrivedPatch(x, stream) });
+    } catch {}
+  }
+  const news = newOnServices();
+  if (news.length) toast(`🎉 ${news.length} ${news.length === 1 ? "thing" : "things"} from your watchlist ${news.length === 1 ? "is" : "are"} now on your services`);
+}
+const newOnServices = () => KINDS.flatMap((kind) => list(kind, "mine").filter((x) => x.status === "want" && x.newOn).map((x) => [kind, x]));
+function newsBanner(kind) {
+  const news = newOnServices().filter(([k]) => k === kind);
+  if (!news.length) return "";
+  return `<section class="news card">
+    <h3>🎉 New on your services <button class="btn link small" data-action="dismissNews" data-kind="${kind}">Dismiss</button></h3>
+    <ul>${news.map(([k, x]) => `<li data-action="open" data-kind="${k}" data-id="${x.tmdbId}"><b>${esc(titleOf(x))}</b> <span class="muted">on ${esc(x.newOn.names.join(", "))}</span></li>`).join("")}</ul>
+  </section>`;
 }
 
 // ---------- Changing things ----------
@@ -800,7 +865,12 @@ function card(kind, x, scope, { skip = false, label = null } = {}) {
     extra = interestRow(x);
   } else if (scope === "mine" && x.status === "want" && get(kind, "ours", id)) {
     pills.push(`<span class="pill later">Suggested</span>`);
-  } else if (scope === "mine" && x.status === "want" && othersWith(kind, id).length) {
+  }
+  if (kind === "tv" && x.status === "want") {
+    if (isLimited(x)) pills.push(`<span class="pill later">Limited series</span>`);
+    else if (x.ended) pills.push(`<span class="pill later">Finished</span>`);
+  }
+  if (scope === "mine" && x.status === "want" && othersWith(kind, id).length && !get(kind, "ours", id)) {
     pills.push(`<span class="pill good">${esc(othersWith(kind, id).join(" & "))} too</span>`);
   }
   if (x.status === "watching" && kind === "tv") {
@@ -862,6 +932,7 @@ function renderWatchlist(kind) {
     main.dataset.view = `wl-${kind}`;
     main.innerHTML = `
       ${scopeSwitch(kind, "watchlist")}
+      <div id="news"></div>
       <div id="pick"></div>
       <div class="searchbar"><input id="wlFilter" type="search" placeholder="Search your watchlist…" autocomplete="off" value="${esc(f.q)}"></div>
       <div id="wlControls"></div>
@@ -869,6 +940,7 @@ function renderWatchlist(kind) {
     $("#wlFilter").oninput = (e) => { f.q = e.target.value; f.limit = 60; renderWatchlist(kind); };
   }
   renderPick(kind, "mine");
+  $("#news").innerHTML = newsBanner(kind);
   const svc = myServices();
   const all = myWatchlist(kind);
   let items = all;
@@ -954,8 +1026,11 @@ function pickCandidates(kind, scope) {
     if (p.skipped.has(x.tmdbId)) return false;
     const len = lengthOf(kind, x);
     if (p.time !== "any" && !(len && len <= Number(p.time))) return false;
-    if (p.mood !== "any" && !(x.genres || []).some((g) => MOODS[p.mood].genres.includes(g))) return false;
-    if (p.onServices && svc && !onServices(x, svc)) return false;
+    if (p.moods.length) { const ms = moodsOf(x); if (!p.moods.every((m) => ms.includes(m))) return false; }
+    if (kind === "tv" && p.limited && !isLimited(x)) return false;
+    if (kind === "tv" && p.finished && !x.ended) return false;
+    // If you want to watch something now, it has to be on your services (or ours, for Our stuff)
+    if (svc && !onServices(x, svc)) return false;
     return true;
   });
 }
@@ -983,8 +1058,11 @@ function renderPick(kind, scope) {
       <div class="pick-label">How much time?</div>
       <div class="chips">${TIMES[kind].map(([v, l]) => chip("time", v, l)).join("")}</div>
       <div class="pick-label">What mood?</div>
-      <div class="chips">${chip("mood", "any", "Anything")}${Object.entries(MOODS).map(([k, m]) => chip("mood", k, m.label)).join("")}</div>
-      ${svc ? `<div class="chips"><button class="chip ${p.onServices ? "on" : ""}" data-action="pickServices">${scope === "ours" ? "Only on our services" : "Only on my services"}</button></div>` : ""}
+      <div class="chips"><button class="chip ${p.moods.length ? "" : "on"}" data-action="pickMood" data-v="">Anything</button>${Object.entries(MOODS).map(([k, m]) => `<button class="chip ${p.moods.includes(k) ? "on" : ""}" data-action="pickMood" data-v="${k}">${m.label}</button>`).join("")}</div>
+      ${kind === "tv" ? `<div class="pick-label">What kind?</div><div class="chips">
+        <button class="chip ${p.limited ? "on" : ""}" data-action="pickToggle" data-k="limited">Limited series</button>
+        <button class="chip ${p.finished ? "on" : ""}" data-action="pickToggle" data-k="finished">Finished</button></div>` : ""}
+      <p class="muted small">${svc ? `Only ${scope === "ours" ? "things on your shared services" : "things on your services"}.` : `<a href="#" data-action="menu">Pick your streaming services</a> to only get things you can watch.`}</p>
       <button class="btn primary wide" data-action="pick" data-scope="${scope}" ${n ? "" : "disabled"}>${results.length ? "🎲 Pick again" : `🎲 Pick 3`}</button>
       <p class="muted small">${n} ${n === 1 ? noun : K[kind].nouns} match.${p.skipped.size ? ` ${p.skipped.size} skipped tonight · <a href="#" data-action="unskip">bring back</a>` : ""}</p>
       ${results.length ? `<div class="list">${results.map((x) => card(kind, x, scope, { skip: true })).join("")}</div><p class="muted small">Tap ✕ for “not tonight”.</p>` : ""}
@@ -1932,6 +2010,8 @@ async function applyDetails(items) {
     if (d.country && !m.country) patch.country = d.country;
     if (d.firstShown && !m.firstShown) patch.firstShown = d.firstShown;
     if (d.voteCount != null && m.voteCount !== d.voteCount) { patch.voteCount = d.voteCount; if (d.rating) patch.rating = d.rating; }
+    if (d.keywords && !m.keywords) patch.keywords = d.keywords;
+    if (d.originalLanguage && !m.originalLanguage) patch.originalLanguage = d.originalLanguage;
     if (d.views?.length && m.status === "seen" && JSON.stringify(m.views || []) !== JSON.stringify(d.views)) {
       patch.views = d.views;
       patch.seenAt = new Date(d.views[d.views.length - 1] + "T12:00:00").getTime();
@@ -2123,7 +2203,12 @@ document.addEventListener("click", async (e) => {
     case "pickOpen": p.open = true; return render();
     case "pickClose": p.open = false; p.results = null; return render();
     case "pickSet": p[t.dataset.k] = t.dataset.v; p.results = null; return render();
-    case "pickServices": p.onServices = !p.onServices; p.results = null; return render();
+    case "pickMood": { const v = t.dataset.v; p.moods = !v ? [] : p.moods.includes(v) ? p.moods.filter((m) => m !== v) : [...p.moods, v]; p.results = null; return render(); }
+    case "dismissNews": {
+      for (const [k, x] of newOnServices().filter(([k2]) => k2 === kind)) updateDoc(ref(k, "mine", x.tmdbId), { newOn: deleteField() }).catch(() => {});
+      return;
+    }
+    case "pickToggle": p[t.dataset.k] = !p[t.dataset.k]; p.results = null; return render();
     case "pick": doPick(state.mode, t.dataset.scope || scopeHere()); return render();
     case "skip": p.skipped.add(Number(id)); return render();
     case "unskip": p.skipped.clear(); return render();

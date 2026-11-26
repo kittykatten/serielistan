@@ -266,3 +266,7 @@ ol.best li { cursor: pointer; }
 .hbar span { position: absolute; top: -16px; left: 0; right: 0; text-align: center; font-size: 10px; color: var(--muted); }
 .hlab { font-size: 10px; color: var(--muted); margin-top: 3px; }
 .notice.small { font-size: 13px; padding: 12px; margin: 4px 0 8px; }
+.news { padding: 12px 14px; margin: 6px 0 8px; border: 1px solid rgba(74, 222, 128, 0.35); }
+.news h3 { display: flex; justify-content: space-between; align-items: center; font-size: 15px; margin-bottom: 6px; }
+.news ul { margin: 0; padding: 0; list-style: none; font-size: 14px; }
+.news li { padding: 5px 0; border-top: 1px solid var(--line); cursor: pointer; }
