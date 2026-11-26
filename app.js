@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v38";
+const APP_VERSION = "v39";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -356,7 +356,7 @@ const MOODS = {
   deep: { label: "Deep", genres: ["Drama", "History", "Documentary"] },
 };
 const TIMES = {
-  movie: [["any", "Any length"], ["105", "Under 1 h 45"], ["135", "Under 2 h 15"]],
+  movie: [["any", "Any length"], ["90", "Under 90 min"], ["120", "Under 2 h"]],
   tv: [["any", "Any length"], ["300", "Under 5 h"], ["720", "Under 12 h"]],
 };
 const SORTS = [
