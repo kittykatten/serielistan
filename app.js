@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v36";
+const APP_VERSION = "v37";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -1228,7 +1228,6 @@ function renderSheet() {
     kind === "movie" && (x.firstShown || x.releaseDate) && `<div><span class="muted">First shown</span> ${fmtDate(x.firstShown || x.releaseDate)}</div>`,
     mine?.where && mine.status !== "seen" && `<div><span class="muted">Watched at</span> ${esc(mine.where)}</div>`,
     mine?.note && mine.status !== "seen" && `<div><span class="muted">Note</span> ${esc(mine.note)}</div>`,
-    mine?.tags?.length && `<div><span class="muted">Lists</span> ${esc(mine.tags.join(", "))}</div>`,
   ].filter(Boolean).join("");
 
   // Episodes (series): on the copy you are watching, together or alone
