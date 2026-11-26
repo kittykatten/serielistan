@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v43";
+const APP_VERSION = "v44";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -128,7 +128,16 @@ const needsRefresh = (s, maxAge) => Date.now() - (s.fetchedAt || 0) > maxAge || 
 
 // Services from other countries that someone has picked in Settings (e.g. Kanopy via a US library card).
 // Stored per person as users/{uid}.foreign = [{ r: "US", id: 191, name: "Kanopy" }].
-const foreignServices = () => Object.values(state.users).flatMap((u) => u.foreign || []);
+// Streaming services are one shared setting for both of you, in settings/shared.
+// Until that exists (or while the database rules are not updated), everyone's own picks are combined.
+function sharedSettings() {
+  if (state.settings?.services || state.settings?.foreign) return { services: state.settings.services || [], foreign: state.settings.foreign || [] };
+  const us = Object.values(state.users);
+  const foreign = [];
+  for (const f of us.flatMap((u) => u.foreign || [])) if (!foreign.some((g) => g.r === f.r && g.id === f.id)) foreign.push(f);
+  return { services: [...new Set(us.flatMap((u) => u.services || []))], foreign };
+}
+const foreignServices = () => sharedSettings().foreign;
 const foreignKey = () => [...new Set(foreignServices().map((f) => `${f.r}:${f.id}`))].sort().join(",");
 // Picks out the chosen foreign services from TMDB's watch/providers results (all countries).
 function foreignProviders(results, already) {
@@ -426,7 +435,9 @@ const newFilters = () => ({ q: "", onServices: false, sort: "added", limit: 60, 
 const newPick = () => ({ open: false, time: "any", lang: "any", moods: [], limited: false, finished: false, results: null, skipped: new Set() });
 const state = {
   user: null,
-  users: {}, // uid -> {name, services, foreign}
+  users: {}, // uid -> {name, wl, ...}
+  settings: null, // shared settings (streaming services)
+  settingsOk: false, // true when the shared settings can be read and written
   data: { tv: { mine: [], ours: [] }, movie: { mine: [], ours: [] } },
   loaded: { tv: { mine: false, ours: false }, movie: { mine: false, ours: false } },
   err: { tv: null, movie: null },
@@ -537,6 +548,11 @@ function startListening() {
     render();
     if (allLoaded()) scheduleOverlap();
   }, renderNoAccess));
+  unsubs.push(onSnapshot(doc(db, "settings", "shared"), (snap) => {
+    state.settingsOk = true;
+    state.settings = snap.exists() ? snap.data() : null;
+    render();
+  }, () => { state.settingsOk = false; }));
   for (const kind of KINDS) {
     for (const scope of ["mine", "ours"]) {
       const path = scope === "mine" ? K[kind].mine(state.user.uid) : K[kind].ours;
@@ -848,11 +864,7 @@ function scopeSwitch(kind, tab) {
 }
 
 // ---------- Streaming services ----------
-const myServices = () => {
-  const u = state.users[state.user?.uid] || {};
-  const s = [...(u.services || []), ...(u.foreign || []).map((f) => f.id)];
-  return s.length ? new Set(s) : null;
-};
+const myServices = () => ourServices(); // the same services for both of you
 const servicesFor = (scope) => (scope === "ours" ? ourServices() : myServices());
 const onServices = (x, set) => (x.providers?.stream || []).some((p) => set.has(p.id));
 
@@ -1414,7 +1426,8 @@ function renderSheet() {
   el.scrollTop = scrollTop;
 }
 function ourServices() {
-  const ids = new Set(Object.values(state.users).flatMap((u) => [...(u.services || []), ...(u.foreign || []).map((f) => f.id)]));
+  const st = sharedSettings();
+  const ids = new Set([...st.services, ...st.foreign.map((f) => f.id)]);
   return ids.size ? ids : null;
 }
 function splitProviders(show, mine = ourServices()) {
@@ -1521,8 +1534,8 @@ function renderSettings() {
           <section id="labelsBox"></section>
           <section id="importBox"></section>
           <section>
-            <h3>Your streaming services</h3>
-            <p class="muted small">Pick the services you have. My stuff shows your services, Our stuff shows the services any of you has. Other services are not shown. Pick none to show all.</p>
+            <h3>Streaming services</h3>
+            <p class="muted small">Pick the services you have. The same for both of you. Only these services are shown, and Help me pick only suggests things on them. Pick none to show all.</p>
             <div id="svcOthers"></div>
             <input id="svcFilter" type="search" placeholder="Find a service…" autocomplete="off">
             <div id="svcList"></div>
@@ -1532,7 +1545,8 @@ function renderSettings() {
     $("#svcFilter").oninput = (e) => { svcQuery = e.target.value; renderSettings(); };
     renderImport();
   }
-  const mine = new Set(state.users[state.user.uid]?.services || []);
+  const shared = sharedSettings();
+  const mine = new Set(shared.services);
   const others = members().filter((m) => m.uid !== state.user.uid);
   $("#acct").innerHTML = `
     <h3>Account</h3>
@@ -1546,12 +1560,8 @@ function renderSettings() {
       <div class="label-row"><span>${esc(tg)} <span class="muted small">${n}</span></span>
         <span><button class="btn link small" data-action="renameTag" data-k="${esc(tg)}">Rename</button><button class="btn link small red" data-action="deleteTag" data-k="${esc(tg)}">Remove</button></span></div>`).join("")}</div>`
       : `<p class="muted small">No labels yet. Add them on a series or movie in My stuff.</p>`}`;
-  $("#svcOthers").innerHTML = others.map((m) => {
-    const theirs = (state.users[m.uid]?.services || []).map((id) => allServices?.find((p) => p.id === id)?.name).filter(Boolean);
-    return theirs.length ? `<p class="muted small">${esc(m.name)} has: ${esc(theirs.join(", "))}</p>` : "";
-  }).join("");
-  const me = state.users[state.user.uid] || {};
-  const myForeign = me.foreign || [];
+  $("#svcOthers").innerHTML = state.settingsOk ? "" : `<p class="muted small">Shared once the database rules are updated. Until then, changes here are yours.</p>`;
+  const myForeign = shared.foreign;
   const isOn = (p, r) => (r === CONFIG.region ? mine.has(p.id) : myForeign.some((f) => f.r === r && f.id === p.id));
   const serviceBtn = (p, r) => `
     <button class="svc ${isOn(p, r) ? "on" : ""}" data-action="toggleService" data-pid="${p.id}" data-r="${r}">
@@ -2131,7 +2141,7 @@ document.addEventListener("click", async (e) => {
     case "menu": return openSettings();
     case "toggleService": {
       const pid = Number(t.dataset.pid), r = t.dataset.r || CONFIG.region;
-      const me = state.users[uid] || {};
+      const me = sharedSettings();
       let patch;
       if (r === CONFIG.region) {
         const cur = me.services || [];
@@ -2142,9 +2152,10 @@ document.addEventListener("click", async (e) => {
         const pr = (regionServices[r] || []).find?.((x) => x.id === pid);
         patch = { foreign: has ? cur.filter((x) => !(x.r === r && x.id === pid)) : [...cur, { r, id: pid, name: pr?.name || "?", logo: pr?.logo || null }] };
       }
-      state.users[uid] = { ...me, ...patch };
+      state.settings = { ...me, ...patch };
       renderSettings();
-      await updateDoc(doc(db, "users", uid), patch).catch((err) => toast("Could not save: " + err.message));
+      if (state.settingsOk) await setDoc(doc(db, "settings", "shared"), { ...me, ...patch }, { merge: true }).catch((err) => toast("Could not save: " + err.message));
+      else await updateDoc(doc(db, "users", uid), patch).catch((err) => toast("Could not save: " + err.message));
       // A new foreign service means stored streaming info must be fetched again.
       if (patch.foreign) { refreshStale(); toast("Updating streaming info…"); }
       return;
