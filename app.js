@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v20";
+const APP_VERSION = "v21";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -58,7 +58,9 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (!hadController || reloading) return;
     reloading = true;
-    location.reload();
+    // Never reload in the middle of a movie import; reload when it has finished instead.
+    const reloadWhenIdle = () => (typeof imp !== "undefined" && imp.running ? setTimeout(reloadWhenIdle, 3000) : location.reload());
+    reloadWhenIdle();
   });
   navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((reg) => {
     reg.update().catch(() => {});
