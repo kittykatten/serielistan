@@ -8,7 +8,7 @@ service cloud.firestore {
         && request.auth.token.email.lower() in ['kittykatten@gmail.com', 'jerry.thorsen@gmail.com'];
     }
 
-    // Serier: gemensamma
+    // Serier som ni delar (Our stuff)
     match /shows/{showId} {
       allow read, write: if isMember();
     }
@@ -17,13 +17,16 @@ service cloud.firestore {
       allow read: if isMember();
       allow write: if isMember() && request.auth.uid == userId;
 
-      // Filmer: varje persons egen lista, bara den personen kan se den
+      // Egna listor (My stuff): bara personen själv kan se dem
       match /movies/{movieId} {
+        allow read, write: if isMember() && request.auth.uid == userId;
+      }
+      match /shows/{showId} {
         allow read, write: if isMember() && request.auth.uid == userId;
       }
     }
 
-    // Filmer som någon har föreslagit att se tillsammans
+    // Filmer som ni delar (Our stuff)
     match /sharedMovies/{movieId} {
       allow read, write: if isMember();
     }
