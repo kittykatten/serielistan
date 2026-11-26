@@ -13,7 +13,15 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const img = (p, size = "w342") => (p ? `https://image.tmdb.org/t/p/${size}${p}` : "");
 const DAY = 86400000;
-const fmtDate = (d) => (d ? new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "");
+// Dates look the same as in the book app: "25 jan 2026", always with the year.
+const MON = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const fmtDate = (d) => {
+  if (!d) return "";
+  const m = typeof d === "string" && /^(\d{4})-(\d{2})-(\d{2})/.exec(d);
+  if (m) return `${Number(m[3])} ${MON[Number(m[2]) - 1]} ${m[1]}`;
+  const dt = new Date(d);
+  return isNaN(dt) ? "" : `${dt.getDate()} ${MON[dt.getMonth()]} ${dt.getFullYear()}`;
+};
 
 // Voting with thumbs: the value is the number of thumbs up (0 = thumbs down).
 const THUMB = `<svg class="thumb" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 21h4V9H2v12zM23 10c0-1.1-.9-2-2-2h-6.3l1-4.6v-.3c0-.4-.2-.8-.4-1.1L14.2 1 7.6 7.6C7.2 7.9 7 8.4 7 9v10c0 1.1.9 2 2 2h9c.8 0 1.5-.5 1.8-1.2l3-7.1c.1-.2.2-.5.2-.7v-2z"/></svg>`;
@@ -48,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v33";
+const APP_VERSION = "v34";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -704,11 +712,7 @@ const onServices = (x, set) => (x.providers?.stream || []).some((p) => set.has(p
 // ---------- Cards ----------
 const lengthOf = (kind, x) => (kind === "movie" ? x.runtime || null : runtimeMinutes(x, false));
 // Seen dates show the year unless it is this year.
-const fmtSeen = (d) => {
-  if (!d) return "";
-  const dt = new Date(d);
-  return dt.toLocaleDateString("en-GB", dt.getFullYear() === new Date().getFullYear() ? { day: "numeric", month: "short" } : { day: "numeric", month: "short", year: "numeric" });
-};
+const fmtSeen = (d) => fmtDate(d);
 // Letterboxd-style stars: 3.5 -> ★★★½
 const starText = (r) => (r ? "★".repeat(Math.floor(r)) + (r % 1 ? "½" : "") : "");
 
@@ -1083,7 +1087,7 @@ function renderSheet() {
         ${movieStars(mine.myRating || 0)}
         <p class="muted small">Tap a star to rate. Tap it again for half a star.</p>
         <label class="field-label" for="seenDate">${mine.views?.length > 1 ? "Date of the latest viewing" : "When did you see it?"}</label>
-        <input id="seenDate" type="date" max="${todayISO()}" value="${esc(lastView(mine) || "")}">
+        <input id="seenDate" inputmode="numeric" placeholder="YYYY-MM-DD" pattern="\\d{4}-\\d{2}-\\d{2}" value="${esc(lastView(mine) || "")}" autocomplete="off">
         <label class="field-label" for="whereText">Where did you watch it?</label>
         <input id="whereText" list="wherePlaces" value="${esc(mine.where || "")}" placeholder="For example Bio, Roy or Netflix" autocomplete="off">
         <datalist id="wherePlaces">${[...new Set(list("movie", "mine").map((m) => m.where).filter(Boolean))].sort().map((w) => `<option value="${esc(w)}">`).join("")}</datalist>
@@ -1146,7 +1150,7 @@ function renderSheet() {
     x.networks?.length && `<div><span class="muted">Network</span> ${esc(x.networks.join(", "))}</div>`,
     (x.originalTitle || x.originalName) && `<div><span class="muted">Original title</span> ${esc(x.originalTitle || x.originalName)}</div>`,
     kind === "tv" && totalText(x) && `<div><span class="muted">Length</span> ${totalText(x)}${x.nextAir ? " so far" : ""}</div>`,
-    kind === "movie" && (x.firstShown || x.releaseDate) && `<div><span class="muted">First shown</span> ${new Date(x.firstShown || x.releaseDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</div>`,
+    kind === "movie" && (x.firstShown || x.releaseDate) && `<div><span class="muted">First shown</span> ${fmtDate(x.firstShown || x.releaseDate)}</div>`,
     mine?.where && mine.status !== "seen" && `<div><span class="muted">Watched at</span> ${esc(mine.where)}</div>`,
     mine?.note && mine.status !== "seen" && `<div><span class="muted">Note</span> ${esc(mine.note)}</div>`,
     mine?.tags?.length && `<div><span class="muted">Lists</span> ${esc(mine.tags.join(", "))}</div>`,
@@ -1943,7 +1947,10 @@ document.addEventListener("click", async (e) => {
     case "saveReview": {
       const text = $("#reviewText")?.value.trim() || "";
       const where = $("#whereText")?.value.trim() || "";
-      const date = $("#seenDate")?.value || "";
+      const date = ($("#seenDate")?.value || "").trim();
+      if (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(new Date(date + "T12:00:00")) || date > todayISO())) {
+        return toast("Write the date as YYYY-MM-DD, for example 2026-01-25");
+      }
       const note = $("#noteText")?.value.trim() || "";
       const patch = { review: text || deleteField(), where: where || deleteField(), note: note || deleteField() };
       if (date) {
