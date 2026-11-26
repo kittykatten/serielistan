@@ -48,7 +48,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v27";
+const APP_VERSION = "v28";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -326,7 +326,7 @@ const K = {
   },
   movie: {
     mine: (uid) => ["users", uid, "movies"], ours: ["sharedMovies"], fetch: (id) => fetchMovieData(id), path: "movie",
-    noun: "movie", nouns: "movies", emoji: "🎬", doneStatus: "seen", maxAge: 7 * DAY,
+    noun: "movie", nouns: "movies", emoji: "🎬", doneStatus: "seen", maxAge: 30 * DAY,
     stale: (m, age) => Date.now() - (m.fetchedAt || 0) > age || m.lang !== CONFIG.language || m.dataV !== MOVIE_DATA_V
       || (m.foreignKey || "") !== foreignKey(),
   },
@@ -548,6 +548,7 @@ async function syncTogether() {
 
 // Fetch new episodes and streaming info for active items, a limited number per start.
 async function refreshStale() {
+  if (typeof imp !== "undefined" && imp.phase !== "idle" && imp.phase !== "applied") return;
   const jobs = [];
   for (const kind of KINDS) for (const scope of ["mine", "ours"]) {
     for (const x of list(kind, scope)) {
@@ -555,7 +556,10 @@ async function refreshStale() {
       if (active && K[kind].stale(x, K[kind].maxAge)) jobs.push([kind, scope, x.tmdbId]);
     }
   }
-  for (const [kind, scope, id] of jobs.slice(0, 200)) {
+  // A few per start keeps mobile data use low. Series you are watching come first.
+  jobs.sort((a, b) => (a[0] === "tv" ? 0 : 1) - (b[0] === "tv" ? 0 : 1));
+  if (navigator.connection?.saveData) return;
+  for (const [kind, scope, id] of jobs.slice(0, 25)) {
     try { await updateDoc(ref(kind, scope, id), await K[kind].fetch(id)); } catch {}
   }
 }
@@ -631,7 +635,15 @@ function renderShell() {
   render();
 }
 
+// Data updates can come in quick bursts (an import saves thousands of movies). Draw at most once per
+// animation frame, and only every couple of seconds while an import is saving, so the browser keeps up.
+let renderTimer = null;
 function render() {
+  if (renderTimer) return;
+  const busy = typeof imp !== "undefined" && imp.phase === "applying";
+  renderTimer = setTimeout(() => requestAnimationFrame(() => { renderTimer = null; renderNow(); }), busy ? 2000 : 0);
+}
+function renderNow() {
   if (!$("#main")) return;
   const kind = state.mode;
   const av = $(".avatar");
@@ -1356,11 +1368,11 @@ const nearYear = (r, y, d) => !y || (yearOf(r) && Math.abs(yearOf(r) - y) <= d);
 // Looks a title up. "strict" is a result with exactly the same title (and about the same year).
 // "loose" is what the first version of the import picked (the first search result), used to find
 // movies that were matched wrongly before.
-async function matchMovie(title, year, id) {
+async function matchMovie(title, year, id, item = {}) {
+  // A line with an exact TMDB id (checked by Claude) needs no search at all, so no data is used.
   if (id) {
-    const d = await tmdb(`/movie/${id}`);
-    const hit = { id: d.id, title: d.title, original_title: d.original_title, release_date: d.release_date, poster_path: d.poster_path, backdrop_path: d.backdrop_path, overview: d.overview, vote_average: d.vote_average };
-    return { strict: hit, loose: hit };
+    const hit = { id: Number(id), title, lite: true };
+    return { strict: hit, loose: item.wasId ? { id: Number(item.wasId), title: item.wasTitle || "?" } : hit };
   }
   const clean = title.replace(/\s*\([^)]*\)\s*$/, "").trim();
   const y = Number(year) || null;
@@ -1471,7 +1483,7 @@ async function runImport() {
   await runInParallel(imp.items.filter((i) => i.kind !== "tv"), async (item) => {
     for (let attempt = 0; ; attempt++) {
       try {
-        const { strict, loose } = await matchMovie(item.t, item.y, item.id);
+        const { strict, loose } = await matchMovie(item.t, item.y, item.id, item);
         if (strict && (!loose || loose.id === strict.id)) ok.push({ item, strict, loose });
         else if (strict) moved.push({ item, strict, loose });
         else if (loose) uncertain.push({ item, loose });
@@ -1586,6 +1598,16 @@ async function applyImport() {
       }
       let data;
       if (f.status === "want") data = await fetchMovieData(id); // full details: runtime, services, cast
+      else if (hit.lite) {
+        // Only the id is known: fetch the basics (small) for the poster and title
+        const d = await tmdb(`/movie/${id}`);
+        data = {
+          tmdbId: id, title: d.title, originalTitle: d.original_title && d.original_title !== d.title ? d.original_title : null,
+          poster: d.poster_path || null, backdrop: d.backdrop_path || null, overview: d.overview || "",
+          year: (d.release_date || "").slice(0, 4), releaseDate: d.release_date || null,
+          rating: d.vote_average ? Math.round(d.vote_average * 10) / 10 : null, lang: CONFIG.language, dataV: 0, fetchedAt: 0,
+        };
+      }
       else data = { // seen movies only need the basics; details are fetched when you open one
         tmdbId: id, title: hit.title, originalTitle: hit.original_title && hit.original_title !== hit.title ? hit.original_title : null,
         poster: hit.poster_path || null, backdrop: hit.backdrop_path || null, overview: hit.overview || "",
