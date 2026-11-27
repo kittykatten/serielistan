@@ -79,7 +79,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v1.1 beta (v55)";
+const APP_VERSION = "v1.1.1 beta (v56)";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -1529,12 +1529,15 @@ function renderGlobalSearch() {
   const mine = local.length ? `<h2 class="section">In your lists (${local.length})</h2>
     <div class="list">${local.slice(0, 40).map(([k, x, scope]) => card(k, x, scope, { label: `<span class="pill later">${KIND_NAMES[k] === "Series" ? "Series" : "Movie"} · ${esc(whereLabel(k, x, scope))}</span>` })).join("")}</div>
     ${local.length > 40 ? `<p class="muted small">Showing 40 of ${local.length}. Type more to narrow it down.</p>` : ""}` : "";
-  const fresh = (k) => (state.gres[k] || []).filter((r) => !get(k, "mine", r.id) && !get(k, "ours", r.id)).slice(0, 10);
+  const fresh = (k) => (state.gres[k] || []).filter((r) => !get(k, "mine", r.id) && !get(k, "ours", r.id));
+  // Movies and series mixed, best known first, so a famous series is not hidden under many small films
+  const mixed = state.gres.movie ? [...fresh("movie").map((r) => ["movie", r]), ...fresh("tv").map((r) => ["tv", r])]
+    .sort(([, a], [, b]) => (b.popularity || 0) - (a.popularity || 0)).slice(0, 20) : [];
   const tm = state.gres.movie
-    ? ["movie", "tv"].map((k) => fresh(k).length ? `<h2 class="section">${k === "movie" ? "Movies" : "Series"} on TMDB</h2><div class="list">${fresh(k).map((r) => tmdbCard(k, r)).join("")}</div>` : "").join("")
+    ? (mixed.length ? `<h2 class="section">On TMDB</h2><div class="list">${mixed.map(([k, r]) => tmdbCard(k, r)).join("")}</div>` : "")
     : `<div class="splash small"><div class="spinner"></div></div>`;
   main.innerHTML = `${pageH1(`Search: ${state.gq.trim()}`)}${mine}${tm}
-    ${state.gres.movie && !local.length && !fresh("movie").length && !fresh("tv").length ? `<p class="empty">No results.</p>` : ""}
+    ${state.gres.movie && !local.length && !mixed.length ? `<p class="empty">No results.</p>` : ""}
     <p class="attribution">Data from TMDB. Streaming info from JustWatch.</p>`;
 }
 
