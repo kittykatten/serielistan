@@ -56,7 +56,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v50";
+const APP_VERSION = "v51";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -1602,6 +1602,11 @@ function renderSettings() {
         <div class="sheet-body flat">
           <section id="acct"></section>
           <section id="labelsBox"></section>
+          <section>
+            <h3>Backup</h3>
+            <p class="muted small">Saves everything you have in the app as a file: your own lists (series and movies, with ratings, comments, dates and labels) and what you share. Keep it somewhere safe. Claude can restore from it.</p>
+            <button class="btn wide" data-action="backup">Download backup</button>
+          </section>
           <section id="importBox"></section>
           <section>
             <h3>Streaming services</h3>
@@ -2148,6 +2153,31 @@ function goToPending(kind) {
   state.ourFilter[kind] = "pending";
 }
 
+// ---------- Backup ----------
+// Everything this account can see, as one JSON file. Nothing leaves the device except as the download.
+function downloadBackup() {
+  const uid = state.user.uid;
+  const data = {
+    kind: "serielistan-backup",
+    version: 1,
+    created: new Date().toISOString(),
+    appVersion: APP_VERSION,
+    user: { uid, email: state.user.email, name: myName(), ...state.users[uid] },
+    settings: state.settings,
+    mine: { shows: list("tv", "mine"), movies: list("movie", "mine") },
+    ours: { shows: list("tv", "ours"), movies: list("movie", "ours") },
+  };
+  const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `serielistan-backup-${todayISO()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  const n = data.mine.shows.length + data.mine.movies.length;
+  toast(`Backup saved: ${n} of your own series and movies, ${data.ours.shows.length + data.ours.movies.length} shared`);
+}
+
 // ---------- Labels ----------
 // Labels (tags) belong to your own lists. They can be added per item and renamed or removed everywhere.
 const allTags = () => {
@@ -2246,6 +2276,7 @@ document.addEventListener("click", async (e) => {
       return;
     }
     case "svcRegion": svcRegion = t.dataset.r; loadRegionServices(svcRegion); return renderSettings();
+    case "backup": return downloadBackup();
     case "importStart": return runImport();
     case "importApply": return applyImport();
     case "importReset": Object.assign(imp, { items: null, details: null, phase: "idle", plan: null }); return renderImport();
