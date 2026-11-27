@@ -36,6 +36,7 @@ const STATUS = { want: "Watchlist", watching: "Watching", done: "Finished", drop
 
 // Line icons (stroke, follow the text colour)
 const ICONS = {
+  home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
   dice: '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.2"/><circle cx="16" cy="8" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="8" cy="16" r="1.2"/><circle cx="16" cy="16" r="1.2"/>',
   tv: '<rect x="2.5" y="7" width="19" height="13" rx="2"/><path d="M17 2.5 12 7 7 2.5"/>',
   film: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="m3 7 2.5-4h15L18 7"/><path d="m9 3-2 4M14 3l-2 4"/>',
@@ -78,7 +79,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v1.1 beta (v52)";
+const APP_VERSION = "v1.1 beta (v53)";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -479,7 +480,7 @@ const state = {
   pick: { tv: newPick(), movie: newPick() },
   search: { tv: { q: "", results: null, trending: null, loading: false }, movie: { q: "", results: null, trending: null, loading: false } },
   watchedLimit: 60,
-  view: "list", // "list" (a tab under Series or Movies), "pick" (Help me pick) or "search"
+  view: "home", // "home", "list" (a tab under Series or Movies), "pick" (Help me pick) or "search"
   pickKind: "movie",
   pickScope: "mine",
   gq: "", // the search box at the top
@@ -879,7 +880,8 @@ function navHtml() {
     return `<button class="nav ${on ? "on" : ""}" data-action="nav" data-kind="${kind}" data-tab="${tab}">${icon(ic)}<span>${label}</span>${n ? `<span class="nbadge">${n}</span>` : ""}</button>`;
   };
   return `
-    <div class="brand"><div class="brand-logo">${icon("tv", 20)}</div><span>What are we<br>watching now?</span></div>
+    <button class="brand" data-action="navHome" aria-label="Home"><div class="brand-logo">${icon("tv", 20)}</div><span>What are we<br>watching now?</span></button>
+    <button class="nav ${state.view === "home" ? "on" : ""}" data-action="navHome">${icon("home")}<span>Home</span></button>
     <button class="nav ${state.view === "pick" ? "on" : ""}" data-action="navPick">${icon("dice")}<span>Help me pick</span></button>
     ${KINDS.map((kind) => `<div class="grp">${icon(kind === "tv" ? "tv" : "film", 14)}${KIND_NAMES[kind]}</div>
       ${TABS[kind].map(([tab, ic, label]) => item(kind, tab, ic, label)).join("")}`).join("")}
@@ -888,12 +890,13 @@ function navHtml() {
 }
 function tabbarHtml() {
   const kind = state.mode;
-  const items = [["pick", "dice", "Pick"], ...TABS[kind].map(([t, ic, l]) => [t, ic, l]), ["more", "more", "More"]];
-  // Series has three tabs, movies three; with Pick and More that is five
+  // Home, Pick, Watchlist, Watched, More (Watching and Stats are under More, and on Home)
+  const items = [["home", "home", "Home"], ["pick", "dice", "Pick"], ["watchlist", "list", "Watchlist"], ["watched", "check", "Watched"], ["more", "more", "More"]];
   return items.map(([t, ic, l]) => {
-    const on = t === "pick" ? state.view === "pick" : t === "more" ? state.moreOpen : state.view === "list" && state.tab[kind] === t;
+    const on = t === "home" ? state.view === "home" : t === "pick" ? state.view === "pick" : t === "more" ? state.moreOpen
+      : state.view === "list" && state.tab[kind] === t;
     const n = t === "watchlist" ? pendingVotes(kind).length : 0;
-    const action = t === "pick" ? `data-action="navPick"` : t === "more" ? `data-action="moreToggle"` : `data-action="nav" data-kind="${kind}" data-tab="${t}"`;
+    const action = t === "home" ? `data-action="navHome"` : t === "pick" ? `data-action="navPick"` : t === "more" ? `data-action="moreToggle"` : `data-action="nav" data-kind="${kind}" data-tab="${t}"`;
     return `<button class="${on ? "active" : ""}" ${action}>${icon(ic, 22)}<span>${l}</span>${n ? `<span class="badge">${n}</span>` : ""}</button>`;
   }).join("");
 }
@@ -907,12 +910,14 @@ function moreSheetHtml() {
   if (!state.moreOpen) return "";
   return `<div class="scrim" data-action="moreToggle"></div>
     <div class="more-sheet"><div class="handle"></div>
-      ${state.mode === "tv" ? `<button class="nav" data-action="nav" data-kind="movie" data-tab="stats">${icon("chart")}<span>Movie stats</span></button>` : ""}
+      <button class="nav" data-action="nav" data-kind="tv" data-tab="watching">${icon("play")}<span>Series I'm watching</span></button>
+      <button class="nav" data-action="nav" data-kind="movie" data-tab="stats">${icon("chart")}<span>Movie stats</span></button>
       <button class="nav" data-action="menu">${icon("gear")}<span>Settings</span></button>
       <p class="muted small">Signed in as ${esc(myName() || "")}</p>
     </div>`;
 }
 function pageTitle() {
+  if (state.view === "home") return "What are we watching now?";
   if (state.view === "pick") return "Help me pick";
   if (state.view === "search") return "Search";
   return TAB_NAMES[state.tab[state.mode]] || "";
@@ -935,6 +940,7 @@ function renderNow() {
   $("#tabbar").innerHTML = tabbarHtml();
   $("#modeSeg").innerHTML = modeSegHtml();
   $("#modeSeg").hidden = state.view !== "list";
+  document.body.dataset.view = state.view;
   $("#moreSheet").innerHTML = moreSheetHtml();
   $("#ptitle").textContent = pageTitle();
   $("#gsearchWrap").classList.toggle("open", state.searchOpen || !!state.gq);
@@ -942,7 +948,8 @@ function renderNow() {
 
   const main = $("#main");
   const tab = state.tab[kind];
-  if (state.view === "pick") renderPickPage();
+  if (state.view === "home") renderHome();
+  else if (state.view === "pick") renderPickPage();
   else if (state.view === "search") renderGlobalSearch();
   else if (!state.loaded[kind].mine || !state.loaded[kind].ours) main.innerHTML = `<div class="splash"><div class="spinner"></div></div>`;
   else if (state.err[kind]) renderDbNotice(main, kind);
@@ -1254,6 +1261,77 @@ function renderPick(kind, scope) {
       <p class="muted small">${n} ${n === 1 ? noun : K[kind].nouns} match${scope === "ours" && list(kind, "ours").some((x) => starCount(x)) ? " · Up next comes first" : ""}.${p.skipped.size ? ` ${p.skipped.size} skipped tonight · <a href="#" data-action="unskip">bring back</a>` : ""}</p>
       ${results.length ? `<div class="list">${results.map((x) => card(kind, x, scope, { skip: true })).join("")}</div><p class="muted small">Tap ✕ for “not tonight”.</p>` : ""}
     </section>`;
+}
+
+// ---------- Home: what is going on right now ----------
+function renderHome() {
+  const main = $("#main");
+  main.dataset.view = "home";
+  if (!KINDS.every((k) => state.loaded[k].mine && state.loaded[k].ours)) { main.innerHTML = `<div class="splash"><div class="spinner"></div></div>`; return; }
+  const h = new Date().getHours();
+  const greet = h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+  const sections = [];
+
+  // Waiting for your vote
+  const pend = KINDS.map((k) => [k, pendingVotes(k).length]).filter(([, n]) => n);
+  if (pend.length) sections.push(`<section class="hsec">
+    <h2>${icon("users", 18)} Waiting for your vote</h2>
+    <div class="hbtns">${pend.map(([k, n]) => `<button class="hbtn" data-action="homePending" data-kind="${k}"><b>${n}</b> ${n === 1 ? (k === "tv" ? "series" : "movie") : KIND_NAMES[k].toLowerCase()} from ${esc(otherNames() || "the other one")}</button>`).join("")}</div>
+  </section>`);
+
+  // Continue watching (series)
+  const watching = [...list("tv", "ours").filter((x) => x.status === "watching" && !caughtUp(x)).map((x) => [x, "ours"]),
+    ...list("tv", "mine").filter((x) => x.status === "watching" && !caughtUp(x) && !oursActive("tv", x.tmdbId)).map((x) => [x, "mine"])]
+    .sort(([a], [b]) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  if (watching.length) sections.push(`<section class="hsec wide">
+    <h2>${icon("play", 18)} Continue watching <button class="btn link small" data-action="nav" data-kind="tv" data-tab="watching">All</button></h2>
+    <div class="list">${watching.slice(0, 4).map(([x, sc]) => card("tv", x, sc, { label: sc === "ours" ? `<span class="pill good">Together</span>` : `<span class="pill later">Just me</span>` })).join("")}</div>
+  </section>`);
+
+  // Up next (starred, both kinds)
+  const starred = KINDS.flatMap((k) => list(k, "ours").filter((x) => x.status === "want" && starCount(x)).map((x) => [k, x]))
+    .sort(([, a], [, b]) => starCount(b) - starCount(a) || thumbsTotal(b) - thumbsTotal(a));
+  if (starred.length) sections.push(`<section class="hsec">
+    <h2>${icon("star", 18)} Up next</h2>
+    <div class="rank">${starred.slice(0, 6).map(([k, x], i) => `<div class="ritem" data-action="open" data-kind="${k}" data-id="${x.tmdbId}">
+      <div class="rnum ${starCount(x) > 1 ? "first" : ""}">${i + 1}</div>
+      <div class="mini">${x.poster ? `<img loading="lazy" src="${img(x.poster, "w92")}" alt="">` : ""}</div>
+      <div class="rtext"><b>${esc(titleOf(x))}</b><div class="muted small">${k === "tv" ? "Series" : "Movie"} · ${starCount(x) > 1 ? "starred by both" : "one star"}</div></div>
+    </div>`).join("")}</div>
+  </section>`);
+
+  // New episodes in the coming week
+  const soon = Date.now() + 8 * DAY;
+  const eps = [...list("tv", "ours").map((x) => [x, "ours"]), ...list("tv", "mine").filter((x) => !get("tv", "ours", x.tmdbId)).map((x) => [x, "mine"])]
+    .filter(([x]) => (x.status === "watching" || x.status === "want") && x.nextAir?.date && new Date(x.nextAir.date).getTime() >= Date.now() - DAY && new Date(x.nextAir.date).getTime() <= soon)
+    .sort(([a], [b]) => a.nextAir.date.localeCompare(b.nextAir.date));
+  if (eps.length) sections.push(`<section class="hsec">
+    <h2>${icon("tv", 18)} New episodes this week</h2>
+    <ul class="hlist">${eps.map(([x]) => `<li data-action="open" data-kind="tv" data-id="${x.tmdbId}"><b>${esc(titleOf(x))}</b> <span class="muted">${epLabel(x.nextAir)} · ${fmtDate(x.nextAir.date)}</span></li>`).join("")}</ul>
+  </section>`);
+
+  // New on your services
+  const news = newOnServices();
+  if (news.length) sections.push(`<section class="hsec">
+    <h2>${icon("bulb", 18)} New on your services</h2>
+    <ul class="hlist">${news.slice(0, 8).map(([k, x]) => `<li data-action="open" data-kind="${k}" data-id="${x.tmdbId}"><b>${esc(titleOf(x))}</b> <span class="muted">on ${esc(x.newOn.names.join(", "))}</span></li>`).join("")}</ul>
+  </section>`);
+
+  // This year in movies
+  const year = new Date().getFullYear();
+  const yv = viewings().filter((v) => v.year === year);
+  sections.push(`<section class="hsec">
+    <h2>${icon("chart", 18)} ${year} in movies <button class="btn link small" data-action="nav" data-kind="movie" data-tab="stats">Stats</button></h2>
+    <div class="tiles"><div class="tile"><div class="v">${yv.length}</div><div class="l">movies seen</div></div><div class="tile"><div class="v">${Math.round(hours(yv))} h</div><div class="l">watched</div></div></div>
+  </section>`);
+
+  main.innerHTML = `
+    <div class="home-hero">
+      <div><h1 class="hello">${greet}, ${esc(myName() || "")}</h1>
+      <p class="muted">${new Date().toLocaleDateString("en-GB", { weekday: "long" })} ${fmtDate(Date.now())}</p></div>
+      <button class="btn primary" data-action="navPick">${icon("dice")} Help me pick</button>
+    </div>
+    <div class="home-grid">${sections.join("")}</div>`;
 }
 
 // The Help me pick page: a movie or a series, for me or for both of us
@@ -2547,6 +2625,17 @@ document.addEventListener("click", async (e) => {
       if (tab === "watchlist" && pendingVotes(k).length) goToPending(k);
       else { state.tab[k] = tab; localStorage.setItem(`tab-${k}`, tab); }
       $("#main").innerHTML = ""; $("#main").dataset.view = "";
+      window.scrollTo(0, 0);
+      return render();
+    }
+    case "navHome":
+      state.view = "home"; state.moreOpen = false; clearSearch();
+      window.scrollTo(0, 0);
+      return render();
+    case "homePending": {
+      const k = t.dataset.kind;
+      state.mode = k; localStorage.setItem("mode", k); state.view = "list"; goToPending(k);
+      $("#main").dataset.view = "";
       window.scrollTo(0, 0);
       return render();
     }
