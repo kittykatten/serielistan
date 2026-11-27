@@ -79,7 +79,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v1.1 beta (v53)";
+const APP_VERSION = "v1.1 beta (v54)";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -1317,12 +1317,10 @@ function renderHome() {
     <ul class="hlist">${news.slice(0, 8).map(([k, x]) => `<li data-action="open" data-kind="${k}" data-id="${x.tmdbId}"><b>${esc(titleOf(x))}</b> <span class="muted">on ${esc(x.newOn.names.join(", "))}</span></li>`).join("")}</ul>
   </section>`);
 
-  // This year in movies
-  const year = new Date().getFullYear();
-  const yv = viewings().filter((v) => v.year === year);
-  sections.push(`<section class="hsec">
-    <h2>${icon("chart", 18)} ${year} in movies <button class="btn link small" data-action="nav" data-kind="movie" data-tab="stats">Stats</button></h2>
-    <div class="tiles"><div class="tile"><div class="v">${yv.length}</div><div class="l">movies seen</div></div><div class="tile"><div class="v">${Math.round(hours(yv))} h</div><div class="l">watched</div></div></div>
+  // Your goals (coming later): a place kept for them
+  sections.push(`<section class="hsec goals">
+    <h2>${icon("check", 18)} Your goals for ${new Date().getFullYear() + (new Date().getMonth() >= 10 ? 1 : 0)}</h2>
+    <p class="muted small">Your goals will show here: how many movies you want to see, and what kinds. Coming in a later version.</p>
   </section>`);
 
   main.innerHTML = `

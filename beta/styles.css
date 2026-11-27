@@ -417,3 +417,4 @@ body[data-view="home"] .ptitle { font-size: 16px; }
   .hsec.wide .list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .hsec .rank { grid-template-columns: 1fr; }
 }
+.hsec.goals { border: 1px dashed var(--line); background: transparent; }
