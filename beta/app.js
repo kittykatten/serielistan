@@ -79,7 +79,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v1.1 beta (v54)";
+const APP_VERSION = "v1.1 beta (v55)";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -1921,7 +1921,8 @@ function renderSettings() {
       <div class="label-row"><span>${esc(tg)} <span class="muted small">${n}</span></span>
         <span><button class="btn link small" data-action="renameTag" data-k="${esc(tg)}">Rename</button><button class="btn link small red" data-action="deleteTag" data-k="${esc(tg)}">Remove</button></span></div>`).join("")}</div>`
       : `<p class="muted small">No labels yet. Add them on a series or movie in My stuff.</p>`}`;
-  $("#svcOthers").innerHTML = state.settingsOk ? "" : `<p class="muted small">Shared once the database rules are updated. Until then, changes here are yours.</p>`;
+  // The services are one setting for both of you. A service someone picks is added for both.
+  $("#svcOthers").innerHTML = "";
   const myForeign = shared.foreign;
   const isOn = (p, r) => (r === CONFIG.region ? mine.has(p.id) : myForeign.some((f) => f.r === r && f.id === p.id));
   const serviceBtn = (p, r) => `

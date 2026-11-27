@@ -1,5 +1,5 @@
 // Service worker: gör att appen startar snabbt och fungerar även med dålig täckning.
-const VERSION = "v54";
+const VERSION = "v55";
 const SHELL = `beta-shell-${VERSION}`; // the test version keeps its own cache
 const IMAGES = "images-v1";
 const FILES = [

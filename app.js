@@ -34,6 +34,29 @@ const INTEREST = [
 const OURS_MIN = 3; // total thumbs up needed for "Our shows"
 const STATUS = { want: "Watchlist", watching: "Watching", done: "Finished", dropped: "Dropped" };
 
+// Line icons (stroke, follow the text colour)
+const ICONS = {
+  home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
+  dice: '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.2"/><circle cx="16" cy="8" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="8" cy="16" r="1.2"/><circle cx="16" cy="16" r="1.2"/>',
+  tv: '<rect x="2.5" y="7" width="19" height="13" rx="2"/><path d="M17 2.5 12 7 7 2.5"/>',
+  film: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="m3 7 2.5-4h15L18 7"/><path d="m9 3-2 4M14 3l-2 4"/>',
+  list: '<path d="M18 21l-6-4-6 4V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z"/>',
+  play: '<circle cx="12" cy="12" r="9"/><path d="m10 8.5 5 3.5-5 3.5z"/>',
+  check: '<circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
+  chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+  more: '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c1-3.5 3.5-5.5 6.5-5.5s5.5 2 6.5 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.8c1.8.8 3 2.6 3.5 5.2"/>',
+  star: '<path d="M12 2.5l2.9 6.1 6.6.7-5 4.5 1.4 6.6L12 17l-5.9 3.4 1.4-6.6-5-4.5 6.6-.7z"/>',
+  shuffle: '<path d="M3 6h4l10 12h4M3 18h4l3-3.6M14 9.6 17 6h4M18 3l3 3-3 3M18 15l3 3-3 3"/>',
+  lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  bulb: '<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/>',
+};
+const icon = (name, size = 20, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true">${ICONS[name] || ""}</svg>`;
+
 let toastTimer;
 function toast(msg) {
   const t = $("#toast");
@@ -48,7 +71,7 @@ const configured = !JSON.stringify(CONFIG).includes("KLISTRA-IN");
 if (!configured) {
   $("#app").innerHTML = `
     <div class="center-page">
-      <div class="logo">📺</div>
+      <div class="logo">${icon("tv", 48)}</div>
       <h1>Almost there!</h1>
       <p>Open <b>config.js</b> and fill in your Firebase and TMDB keys.</p>
     </div>`;
@@ -56,7 +79,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v51";
+const APP_VERSION = "v1.1 (v55)";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -344,12 +367,12 @@ const MOVIE_DATA_V = 2; // 2: year = first time shown anywhere
 const K = {
   tv: {
     mine: (uid) => ["users", uid, "shows"], ours: ["shows"], fetch: (id) => fetchShowData(id), path: "tv",
-    noun: "series", nouns: "series", emoji: "📺", doneStatus: "done", maxAge: DAY,
+    noun: "series", nouns: "series", emoji: icon("tv", 26), doneStatus: "done", maxAge: DAY,
     stale: (s, age) => needsRefresh(s, age),
   },
   movie: {
     mine: (uid) => ["users", uid, "movies"], ours: ["sharedMovies"], fetch: (id) => fetchMovieData(id), path: "movie",
-    noun: "movie", nouns: "movies", emoji: "🎬", doneStatus: "seen", maxAge: 30 * DAY,
+    noun: "movie", nouns: "movies", emoji: icon("film", 26), doneStatus: "seen", maxAge: 30 * DAY,
     stale: (m, age) => Date.now() - (m.fetchedAt || 0) > age || m.lang !== CONFIG.language || m.dataV !== MOVIE_DATA_V
       || (m.foreignKey || "") !== foreignKey(),
   },
@@ -457,12 +480,20 @@ const state = {
   pick: { tv: newPick(), movie: newPick() },
   search: { tv: { q: "", results: null, trending: null, loading: false }, movie: { q: "", results: null, trending: null, loading: false } },
   watchedLimit: 60,
+  view: "home", // "home", "list" (a tab under Series or Movies), "pick" (Help me pick) or "search"
+  pickKind: "movie",
+  pickScope: "mine",
+  gq: "", // the search box at the top
+  gres: { movie: null, tv: null, loading: false },
+  searchOpen: false, // phone: search row shown
+  moreOpen: false, // phone: the More sheet
+  starDialog: null, // { kind, id } when a fourth star is tried
   open: null, // { kind, id } for the detail sheet
   preview: null, // TMDB data for an item that is in neither list
   sheetSeason: null,
 };
-if (!["watchlist", "watching", "watched", "search"].includes(state.tab.tv)) state.tab.tv = "watchlist";
-if (!["watchlist", "watched", "stats", "search"].includes(state.tab.movie)) state.tab.movie = "watchlist";
+if (!["watchlist", "watching", "watched"].includes(state.tab.tv)) state.tab.tv = "watchlist";
+if (!["watchlist", "watched", "stats"].includes(state.tab.movie)) state.tab.movie = "watchlist";
 
 const list = (kind, scope) => state.data[kind][scope];
 const get = (kind, scope, id) => list(kind, scope).find((x) => String(x.tmdbId) === String(id));
@@ -495,6 +526,13 @@ const isMaybeLater = (x) => {
   return ms.length > 1 && !isOurs(x) && ms.every((m) => (x.interest?.[m.uid] ?? 0) >= 1);
 };
 const interestScore = (x) => members().reduce((sum, m) => sum + (x.interest?.[m.uid] ?? 1), 0);
+// Up next: each person can star up to three things in Our stuff, only things they gave two thumbs
+const MAX_STARS = 3;
+const starCount = (x) => Object.values(x.stars || {}).filter(Boolean).length;
+const myStars = (kind) => list(kind, "ours").filter((x) => x.status === "want" && x.stars?.[state.user.uid]);
+const canStar = (x) => x.status === "want" && x.interest?.[state.user.uid] === 2;
+const starBtn = (kind, x) => canStar(x)
+  ? `<button class="starbtn ${x.stars?.[state.user.uid] ? "on" : ""}" data-action="star" data-kind="${kind}" data-id="${x.tmdbId}" aria-label="${x.stars?.[state.user.uid] ? "Remove from Up next" : "Put in Up next"}" title="Up next">${icon("star", 18)}</button>` : "";
 const pendingVotes = (kind) => list(kind, "ours").filter((x) => x.status === "want" && awaitsMyVote(x));
 function interestRow(x) {
   return `<div class="votes">${members().map((m) => {
@@ -524,7 +562,7 @@ onAuthStateChanged(auth, async (user) => {
 function renderLogin(error = "") {
   $("#app").innerHTML = `
     <div class="center-page">
-      <div class="logo">📺</div>
+      <div class="logo">${icon("tv", 48)}</div>
       <h1>What are we watching now?</h1>
       <p class="muted">Series and movies to watch</p>
       <button class="btn google" data-action="login">
@@ -538,7 +576,7 @@ function renderLogin(error = "") {
 function renderNoAccess(err) {
   $("#app").innerHTML = `
     <div class="center-page">
-      <div class="logo">🔒</div>
+      <div class="logo">${icon("lock", 48)}</div>
       <h1>No access</h1>
       <p><b>${esc(state.user?.email)}</b> is not on the list of allowed email addresses in the Firestore rules.</p>
       <p class="muted small">${esc(err?.code || err?.message || "")}</p>
@@ -791,36 +829,98 @@ function advance(kind, scope, id) {
   if (!n) return;
   const patch = { progress: { s: n.s, e: n.e } };
   if (show.status !== "watching") patch.status = "watching";
+  if (scope === "ours" && show.status === "want") patch.stars = deleteField(); // started watching: stars are freed
   const after = nextEp({ ...show, progress: n });
-  if (!after && show.ended) { patch.status = "done"; toast(`🎉 You finished ${show.name}!`); }
+  if (!after && show.ended) { patch.status = "done"; toast(`You finished ${show.name}!`); }
   else if (!after) toast(`✓ Caught up – moved to Watched until new episodes air`);
   else toast(`✓ ${epLabel(n)} watched`);
   save(kind, scope, id, patch);
 }
 
 // ---------- Main view ----------
+// Navigation: a side menu on wide screens, a bar at the bottom on phones. Same items, same icons.
 const TABS = {
-  tv: [["watchlist", "🍿", "Watchlist"], ["watching", "▶️", "Watching"], ["watched", "✅", "Watched"], ["search", "🔍", "Search"]],
-  movie: [["watchlist", "🎬", "Watchlist"], ["watched", "✅", "Watched"], ["stats", "📊", "Stats"], ["search", "🔍", "Search"]],
+  tv: [["watchlist", "list", "Watchlist"], ["watching", "play", "Watching"], ["watched", "check", "Watched"]],
+  movie: [["watchlist", "list", "Watchlist"], ["watched", "check", "Watched"], ["stats", "chart", "Stats"]],
 };
+const TAB_NAMES = { watchlist: "Watchlist", watching: "Watching", watched: "Watched", stats: "Stats" };
+const KIND_NAMES = { tv: "Series", movie: "Movies" };
 function renderShell() {
   $("#app").innerHTML = `
-    <header class="top">
-      <div class="top-row">
-        <h1>What are we watching now?</h1>
-        <button class="avatar" data-action="menu" aria-label="Menu">${esc((myName() || "?").slice(0, 1).toUpperCase())}</button>
+    <div class="layout">
+      <aside class="side" id="side"></aside>
+      <div class="content">
+        <header class="top">
+          <div class="top-row">
+            <h1 class="ptitle" id="ptitle"></h1>
+            <label class="gsearch" id="gsearchWrap">${icon("search", 18)}
+              <input id="gsearch" type="search" placeholder="Search series and movies: title, director, actor, label…" autocomplete="off">
+            </label>
+            <button class="iconbtn phone-only" data-action="searchToggle" aria-label="Search">${icon("search", 22)}</button>
+            <button class="avatar" data-action="menu" aria-label="Settings">${esc((myName() || "?").slice(0, 1).toUpperCase())}</button>
+          </div>
+          <div class="modes phone-only" id="modeSeg"></div>
+        </header>
+        <main id="main"></main>
       </div>
-      <div class="modes">
-        <button data-action="mode" data-m="tv">📺 Series <span class="chip-count" data-mbadge="tv"></span></button>
-        <button data-action="mode" data-m="movie">🎬 Movies <span class="chip-count" data-mbadge="movie"></span></button>
-      </div>
-    </header>
-    <main id="main"></main>
-    <nav class="tabs">
-      ${TABS[state.mode]
-        .map(([k, i, l]) => `<button data-action="tab" data-tab="${k}"><span class="ti">${i}</span><span>${l}</span><span class="badge" data-badge="${k}"></span></button>`).join("")}
-    </nav>`;
+      <nav class="tabs phone-only" id="tabbar"></nav>
+      <div id="moreSheet"></div>
+      <div id="dialog"></div>
+    </div>`;
+  const input = $("#gsearch");
+  input.value = state.gq;
+  input.oninput = (e) => onGlobalSearch(e.target.value);
   render();
+}
+
+function navHtml() {
+  const item = (kind, tab, ic, label) => {
+    const on = state.view === "list" && state.mode === kind && state.tab[kind] === tab;
+    const n = tab === "watchlist" ? pendingVotes(kind).length : 0;
+    return `<button class="nav ${on ? "on" : ""}" data-action="nav" data-kind="${kind}" data-tab="${tab}">${icon(ic)}<span>${label}</span>${n ? `<span class="nbadge">${n}</span>` : ""}</button>`;
+  };
+  return `
+    <button class="brand" data-action="navHome" aria-label="Home"><div class="brand-logo">${icon("tv", 20)}</div><span>What are we<br>watching now?</span></button>
+    <button class="nav ${state.view === "home" ? "on" : ""}" data-action="navHome">${icon("home")}<span>Home</span></button>
+    <button class="nav ${state.view === "pick" ? "on" : ""}" data-action="navPick">${icon("dice")}<span>Help me pick</span></button>
+    ${KINDS.map((kind) => `<div class="grp">${icon(kind === "tv" ? "tv" : "film", 14)}${KIND_NAMES[kind]}</div>
+      ${TABS[kind].map(([tab, ic, label]) => item(kind, tab, ic, label)).join("")}`).join("")}
+    <div class="side-fill"></div>
+    <button class="nav" data-action="menu">${icon("gear")}<span>Settings</span></button>`;
+}
+function tabbarHtml() {
+  const kind = state.mode;
+  // Home, Pick, Watchlist, Watched, More (Watching and Stats are under More, and on Home)
+  const items = [["home", "home", "Home"], ["pick", "dice", "Pick"], ["watchlist", "list", "Watchlist"], ["watched", "check", "Watched"], ["more", "more", "More"]];
+  return items.map(([t, ic, l]) => {
+    const on = t === "home" ? state.view === "home" : t === "pick" ? state.view === "pick" : t === "more" ? state.moreOpen
+      : state.view === "list" && state.tab[kind] === t;
+    const n = t === "watchlist" ? pendingVotes(kind).length : 0;
+    const action = t === "home" ? `data-action="navHome"` : t === "pick" ? `data-action="navPick"` : t === "more" ? `data-action="moreToggle"` : `data-action="nav" data-kind="${kind}" data-tab="${t}"`;
+    return `<button class="${on ? "active" : ""}" ${action}>${icon(ic, 22)}<span>${l}</span>${n ? `<span class="badge">${n}</span>` : ""}</button>`;
+  }).join("");
+}
+function modeSegHtml() {
+  return KINDS.map((k) => {
+    const n = k === state.mode ? 0 : pendingVotes(k).length;
+    return `<button class="${k === state.mode ? "on" : ""}" data-action="mode" data-m="${k}">${icon(k === "tv" ? "tv" : "film", 16)} ${KIND_NAMES[k]}${n ? ` <span class="chip-count">${n}</span>` : ""}</button>`;
+  }).join("");
+}
+function moreSheetHtml() {
+  if (!state.moreOpen) return "";
+  return `<div class="scrim" data-action="moreToggle"></div>
+    <div class="more-sheet"><div class="handle"></div>
+      <button class="nav" data-action="nav" data-kind="tv" data-tab="watching">${icon("play")}<span>Series I'm watching</span></button>
+      <button class="nav" data-action="nav" data-kind="movie" data-tab="stats">${icon("chart")}<span>Movie stats</span></button>
+      <button class="nav" data-action="menu">${icon("gear")}<span>Settings</span></button>
+      <p class="muted small">Signed in as ${esc(myName() || "")}</p>
+    </div>`;
+}
+function pageTitle() {
+  if (state.view === "home") return "What are we watching now?";
+  if (state.view === "pick") return "Help me pick";
+  if (state.view === "search") return "Search";
+  return TAB_NAMES[state.tab[state.mode]] || "";
 }
 
 // Data updates can come in quick bursts (an import saves thousands of movies). Draw at most once per
@@ -836,17 +936,23 @@ function renderNow() {
   const kind = state.mode;
   const av = $(".avatar");
   if (av) av.textContent = (myName() || "?").slice(0, 1).toUpperCase();
-  document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab[kind]));
-  document.querySelectorAll(".modes button").forEach((b) => b.classList.toggle("on", b.dataset.m === kind));
-  const setBadge = (el, n) => { if (el) { el.textContent = n || ""; el.hidden = !n; } };
-  setBadge(document.querySelector('[data-badge="watchlist"]'), pendingVotes(kind).length);
-  for (const k of KINDS) setBadge(document.querySelector(`[data-mbadge="${k}"]`), k === kind ? 0 : pendingVotes(k).length);
+  $("#side").innerHTML = navHtml();
+  $("#tabbar").innerHTML = tabbarHtml();
+  $("#modeSeg").innerHTML = modeSegHtml();
+  $("#modeSeg").hidden = state.view !== "list";
+  document.body.dataset.view = state.view;
+  $("#moreSheet").innerHTML = moreSheetHtml();
+  $("#ptitle").textContent = pageTitle();
+  $("#gsearchWrap").classList.toggle("open", state.searchOpen || !!state.gq);
+  renderStarDialog();
 
   const main = $("#main");
   const tab = state.tab[kind];
-  if (!state.loaded[kind].mine || !state.loaded[kind].ours) main.innerHTML = `<div class="splash"><div class="spinner"></div></div>`;
+  if (state.view === "home") renderHome();
+  else if (state.view === "pick") renderPickPage();
+  else if (state.view === "search") renderGlobalSearch();
+  else if (!state.loaded[kind].mine || !state.loaded[kind].ours) main.innerHTML = `<div class="splash"><div class="spinner"></div></div>`;
   else if (state.err[kind]) renderDbNotice(main, kind);
-  else if (tab === "search") renderSearch(kind);
   else if (tab === "watching") renderWatching(kind);
   else if (tab === "watched") renderWatched(kind);
   else if (tab === "stats") renderStats();
@@ -864,11 +970,12 @@ function renderDbNotice(main, kind) {
 }
 
 // "My stuff | Our stuff" switch at the top of Watchlist and Watched
+const pageH1 = (text) => `<h1 class="page-h1">${esc(text)}</h1>`;
 function scopeSwitch(kind, tab) {
   const cur = state.scope[kind][tab];
   const pending = tab === "watchlist" ? pendingVotes(kind).length : 0;
-  return `<div class="modes scope">${["mine", "ours"].map((s) => `
-    <button class="${cur === s ? "on" : ""}" data-action="scope" data-s="${s}">${SCOPE_LABEL[s]}${s === "ours" && pending ? ` <span class="chip-count">${pending}</span>` : ""}</button>`).join("")}</div>`;
+  return `${pageH1(`${KIND_NAMES[kind]} · ${TAB_NAMES[tab]}`)}<div class="modes scope">${["mine", "ours"].map((s) => `
+    <button class="${cur === s ? "on" : ""}" data-action="scope" data-s="${s}">${icon(s === "mine" ? "user" : "users", 16)} ${SCOPE_LABEL[s]}${s === "ours" && pending ? ` <span class="chip-count">${pending}</span>` : ""}</button>`).join("")}</div>`;
 }
 
 // ---------- Streaming services ----------
@@ -949,9 +1056,12 @@ function card(kind, x, scope, { skip = false, label = null } = {}) {
         ${extra}
         ${x.status === "want" || x.status === "watching" || x.rewatch ? providerLogos(x, 3, servicesFor(scope)) : ""}
       </div>
-      ${quick}${skipBtn}
+      ${quick}${skipBtn}${scope === "ours" && !skip ? starBtn(kind, x) : ""}
     </article>`;
 }
+
+// How many of the extra filters (behind "Filters" on phones) are in use
+const activeFilters = (f) => [f.both, (f.genres || []).filter(Boolean).length, (f.interest || "yes") !== "yes", f.lang && f.lang !== "any", f.tag].filter(Boolean).length;
 
 // ---------- Genre filter: up to two genres that must both match ----------
 const hasGenres = (x, gs) => gs.every((g) => (x.genres || []).includes(g));
@@ -991,11 +1101,9 @@ function renderWatchlist(kind) {
     main.innerHTML = `
       ${scopeSwitch(kind, "watchlist")}
       <div id="news"></div>
-      <div id="pick"></div>
       <div id="wlControls"></div>
       <div id="wlList"></div>`;
   }
-  renderPick(kind, "mine");
   $("#news").innerHTML = newsBanner(kind);
   const svc = myServices();
   const all = myWatchlist(kind);
@@ -1027,10 +1135,12 @@ function renderWatchlist(kind) {
   items = [...items].sort(by);
   const noun = (n) => `${n} ${n === 1 ? K[kind].noun : K[kind].nouns}`;
   $("#wlControls").innerHTML = `
-    <div class="controls">
+    <div class="controls ${state.filtersOpen ? "open" : ""}">
       <div class="ctl-row">
         <span class="ctl-label">Filter</span>
         ${svc ? `<button class="chip ${f.onServices ? "on" : ""}" data-action="onServices">On my services</button>` : ""}
+        <button class="chip phone-only ${activeFilters(f) ? "on" : ""}" data-action="filtersToggle">Filters${activeFilters(f) ? ` (${activeFilters(f)})` : ""} ${state.filtersOpen ? "▴" : "▾"}</button>
+        <span class="ctl-more">
         ${anyBoth || f.both ? `<button class="chip ${f.both ? "on" : ""}" data-action="bothFilter">Also on ${esc(otherNames())}'s list</button>` : ""}
         ${genreSelects(all, f.genres || [], "genre")}
         <select data-change="interest" aria-label="Your interest" class="${(f.interest || "yes") !== "yes" ? "on" : ""}">${INTEREST_VIEWS.map(([v, l]) => `<option value="${v}" ${(f.interest || "yes") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
@@ -1039,11 +1149,12 @@ function renderWatchlist(kind) {
           <option value="">All labels</option>
           ${tags.map((tg) => `<option value="${esc(tg)}" ${f.tag === tg ? "selected" : ""}>${esc(tg)}</option>`).join("")}
         </select>` : ""}
+        </span>
       </div>
       <div class="ctl-row">
         <span class="ctl-label">Sort</span>
         <select data-change="sort" aria-label="Sort">${SORTS.map(([k, l]) => `<option value="${k}" ${f.sort === k ? "selected" : ""}>${l}</option>`).join("")}</select>
-        ${f.sort === "random" ? `<button class="chip small" data-action="reshuffle">🔀 Shuffle again</button>` : ""}
+        ${f.sort === "random" ? `<button class="chip small" data-action="reshuffle">${icon("shuffle", 14)} Shuffle again</button>` : ""}
       </div>
     </div>
     <p class="muted small count">${noun(items.length)}${hiddenCount ? ` · ${hiddenCount} hidden by your interest` : ""}${!svc ? ` · <a href="#" data-action="menu">Pick your streaming services</a> to filter by them` : ""}</p>`;
@@ -1070,9 +1181,28 @@ function renderOurWatchlist(kind) {
   const empty = f === "all"
     ? `Nothing shared yet. Open a ${K[kind].noun} in My stuff and tap <b>Suggest to ${esc(otherNames() || "watch together")}</b>.`
     : "Nothing matches this filter.";
-  main.innerHTML = `${scopeSwitch(kind, "watchlist")}<div id="pick"></div><div class="chips">${chips}</div>`
-    + (items.length ? `<div class="list">${items.map((x) => card(kind, x, "ours")).join("")}</div>` : `<p class="empty">${empty}</p>`);
-  renderPick(kind, "ours");
+  // Up next: what you have starred (up to 3 each), first what you both starred
+  let upNext = "";
+  if (f === "all") {
+    const starred = items.filter((x) => starCount(x)).sort((a, b) => starCount(b) - starCount(a) || thumbsTotal(b) - thumbsTotal(a));
+    items = items.filter((x) => !starCount(x));
+    const mineN = myStars(kind).length;
+    upNext = `<div class="sec2">${icon("star", 16)} Up next <span>· your stars: ${mineN} of ${MAX_STARS}</span></div>
+      ${starred.length ? `<div class="rank">${starred.map((x, i) => {
+        const who = members().filter((m) => x.stars?.[m.uid]);
+        const note = who.length > 1 ? "Starred by both" : who[0]?.uid === state.user.uid ? `Your star · ${thumbsTotal(x)} thumbs` : `${esc(who[0]?.name || "")}'s star · ${thumbsTotal(x)} thumbs`;
+        return `<div class="ritem" data-action="open" data-kind="${kind}" data-id="${x.tmdbId}">
+          <div class="rnum ${who.length > 1 || i < 2 ? "first" : ""}">${i + 1}</div>
+          <div class="mini">${x.poster ? `<img loading="lazy" src="${img(x.poster, "w92")}" alt="">` : ""}</div>
+          <div class="rtext"><b>${esc(titleOf(x))}</b><div class="muted small">${note}</div></div>
+          <div class="pins">${who.map((m) => `<span class="pin">${icon("star", 12)} ${esc(m.name.slice(0, 1))}</span>`).join("")}</div>
+        </div>`;
+      }).join("")}</div>`
+      : `<p class="muted small hint">Give something two thumbs and tap its star to put it here. You each have ${MAX_STARS} stars.</p>`}
+      <div class="sec2">Everything else <span>· sorted by thumbs</span></div>`;
+  }
+  main.innerHTML = `${scopeSwitch(kind, "watchlist")}<div class="chips">${chips}</div>${upNext}`
+    + (items.length ? `<div class="list">${items.map((x) => card(kind, x, "ours")).join("")}</div>` : `<p class="empty">${upNext && f === "all" && list(kind, "ours").some((x) => x.status === "want") ? "Everything is in Up next." : empty}</p>`);
 }
 
 // ---------- Help me pick ----------
@@ -1098,6 +1228,7 @@ function pickCandidates(kind, scope) {
 function doPick(kind, scope) {
   const c = pickCandidates(kind, scope);
   for (let i = c.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [c[i], c[j]] = [c[j], c[i]]; }
+  if (scope === "ours") c.sort((a, b) => starCount(b) - starCount(a)); // Up next first
   state.pick[kind].results = c.slice(0, 3).map((x) => x.tmdbId);
 }
 function renderPick(kind, scope) {
@@ -1106,7 +1237,7 @@ function renderPick(kind, scope) {
   const p = state.pick[kind];
   const noun = K[kind].noun;
   if (!p.open) {
-    box.innerHTML = `<button class="btn primary wide pickbtn" data-action="pickOpen">🎲 Help me pick ${kind === "tv" ? "a series" : "a movie"}${scope === "ours" ? " for us" : ""}</button>`;
+    box.innerHTML = `<button class="btn primary wide pickbtn" data-action="pickOpen">${icon("dice")} Help me pick ${kind === "tv" ? "a series" : "a movie"}${scope === "ours" ? " for us" : ""}</button>`;
     return;
   }
   const svc = servicesFor(scope);
@@ -1114,8 +1245,7 @@ function renderPick(kind, scope) {
   const results = (p.results || []).map((id) => get(kind, scope, id)).filter((x) => x && (x.status === "want" || x.rewatch) && !p.skipped.has(x.tmdbId));
   const chip = (key, val, label) => `<button class="chip ${p[key] === val ? "on" : ""}" data-action="pickSet" data-k="${key}" data-v="${val}">${label}</button>`;
   box.innerHTML = `
-    <section class="pick card">
-      <h3>Help me pick <button class="btn link small" data-action="pickClose">Close</button></h3>
+    <section class="pick">
       <div class="pick-label">How much time?</div>
       <div class="chips">${TIMES[kind].map(([v, l]) => chip("time", v, l)).join("")}</div>
       <div class="pick-label">Language?</div>
@@ -1127,10 +1257,100 @@ function renderPick(kind, scope) {
         <button class="chip ${p.finished ? "on" : ""}" data-action="pickToggle" data-k="finished">Finished</button></div>` : ""}
       ${scope === "mine" ? `<div class="chips"><button class="chip ${p.maybes ? "on" : ""}" data-action="pickToggle" data-k="maybes">Include maybes</button></div>` : ""}
       <p class="muted small">${svc ? `Only ${scope === "ours" ? "things on your shared services" : "things on your services"}.` : `<a href="#" data-action="menu">Pick your streaming services</a> to only get things you can watch.`}</p>
-      <button class="btn primary wide" data-action="pick" data-scope="${scope}" ${n ? "" : "disabled"}>${results.length ? "🎲 Pick again" : `🎲 Pick 3`}</button>
-      <p class="muted small">${n} ${n === 1 ? noun : K[kind].nouns} match.${p.skipped.size ? ` ${p.skipped.size} skipped tonight · <a href="#" data-action="unskip">bring back</a>` : ""}</p>
+      <button class="btn primary wide" data-action="pick" data-scope="${scope}" ${n ? "" : "disabled"}>${icon("dice")} ${results.length ? "Pick again" : "Pick 3"}</button>
+      <p class="muted small">${n} ${n === 1 ? noun : K[kind].nouns} match${scope === "ours" && list(kind, "ours").some((x) => starCount(x)) ? " · Up next comes first" : ""}.${p.skipped.size ? ` ${p.skipped.size} skipped tonight · <a href="#" data-action="unskip">bring back</a>` : ""}</p>
       ${results.length ? `<div class="list">${results.map((x) => card(kind, x, scope, { skip: true })).join("")}</div><p class="muted small">Tap ✕ for “not tonight”.</p>` : ""}
     </section>`;
+}
+
+// ---------- Home: what is going on right now ----------
+function renderHome() {
+  const main = $("#main");
+  main.dataset.view = "home";
+  if (!KINDS.every((k) => state.loaded[k].mine && state.loaded[k].ours)) { main.innerHTML = `<div class="splash"><div class="spinner"></div></div>`; return; }
+  const h = new Date().getHours();
+  const greet = h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+  const sections = [];
+
+  // Waiting for your vote
+  const pend = KINDS.map((k) => [k, pendingVotes(k).length]).filter(([, n]) => n);
+  if (pend.length) sections.push(`<section class="hsec">
+    <h2>${icon("users", 18)} Waiting for your vote</h2>
+    <div class="hbtns">${pend.map(([k, n]) => `<button class="hbtn" data-action="homePending" data-kind="${k}"><b>${n}</b> ${n === 1 ? (k === "tv" ? "series" : "movie") : KIND_NAMES[k].toLowerCase()} from ${esc(otherNames() || "the other one")}</button>`).join("")}</div>
+  </section>`);
+
+  // Continue watching (series)
+  const watching = [...list("tv", "ours").filter((x) => x.status === "watching" && !caughtUp(x)).map((x) => [x, "ours"]),
+    ...list("tv", "mine").filter((x) => x.status === "watching" && !caughtUp(x) && !oursActive("tv", x.tmdbId)).map((x) => [x, "mine"])]
+    .sort(([a], [b]) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  if (watching.length) sections.push(`<section class="hsec wide">
+    <h2>${icon("play", 18)} Continue watching <button class="btn link small" data-action="nav" data-kind="tv" data-tab="watching">All</button></h2>
+    <div class="list">${watching.slice(0, 4).map(([x, sc]) => card("tv", x, sc, { label: sc === "ours" ? `<span class="pill good">Together</span>` : `<span class="pill later">Just me</span>` })).join("")}</div>
+  </section>`);
+
+  // Up next (starred, both kinds)
+  const starred = KINDS.flatMap((k) => list(k, "ours").filter((x) => x.status === "want" && starCount(x)).map((x) => [k, x]))
+    .sort(([, a], [, b]) => starCount(b) - starCount(a) || thumbsTotal(b) - thumbsTotal(a));
+  if (starred.length) sections.push(`<section class="hsec">
+    <h2>${icon("star", 18)} Up next</h2>
+    <div class="rank">${starred.slice(0, 6).map(([k, x], i) => `<div class="ritem" data-action="open" data-kind="${k}" data-id="${x.tmdbId}">
+      <div class="rnum ${starCount(x) > 1 ? "first" : ""}">${i + 1}</div>
+      <div class="mini">${x.poster ? `<img loading="lazy" src="${img(x.poster, "w92")}" alt="">` : ""}</div>
+      <div class="rtext"><b>${esc(titleOf(x))}</b><div class="muted small">${k === "tv" ? "Series" : "Movie"} · ${starCount(x) > 1 ? "starred by both" : "one star"}</div></div>
+    </div>`).join("")}</div>
+  </section>`);
+
+  // New episodes in the coming week
+  const soon = Date.now() + 8 * DAY;
+  const eps = [...list("tv", "ours").map((x) => [x, "ours"]), ...list("tv", "mine").filter((x) => !get("tv", "ours", x.tmdbId)).map((x) => [x, "mine"])]
+    .filter(([x]) => (x.status === "watching" || x.status === "want") && x.nextAir?.date && new Date(x.nextAir.date).getTime() >= Date.now() - DAY && new Date(x.nextAir.date).getTime() <= soon)
+    .sort(([a], [b]) => a.nextAir.date.localeCompare(b.nextAir.date));
+  if (eps.length) sections.push(`<section class="hsec">
+    <h2>${icon("tv", 18)} New episodes this week</h2>
+    <ul class="hlist">${eps.map(([x]) => `<li data-action="open" data-kind="tv" data-id="${x.tmdbId}"><b>${esc(titleOf(x))}</b> <span class="muted">${epLabel(x.nextAir)} · ${fmtDate(x.nextAir.date)}</span></li>`).join("")}</ul>
+  </section>`);
+
+  // New on your services
+  const news = newOnServices();
+  if (news.length) sections.push(`<section class="hsec">
+    <h2>${icon("bulb", 18)} New on your services</h2>
+    <ul class="hlist">${news.slice(0, 8).map(([k, x]) => `<li data-action="open" data-kind="${k}" data-id="${x.tmdbId}"><b>${esc(titleOf(x))}</b> <span class="muted">on ${esc(x.newOn.names.join(", "))}</span></li>`).join("")}</ul>
+  </section>`);
+
+  // Your goals (coming later): a place kept for them
+  sections.push(`<section class="hsec goals">
+    <h2>${icon("check", 18)} Your goals for ${new Date().getFullYear() + (new Date().getMonth() >= 10 ? 1 : 0)}</h2>
+    <p class="muted small">Your goals will show here: how many movies you want to see, and what kinds. Coming in a later version.</p>
+  </section>`);
+
+  main.innerHTML = `
+    <div class="home-hero">
+      <div><h1 class="hello">${greet}, ${esc(myName() || "")}</h1>
+      <p class="muted">${new Date().toLocaleDateString("en-GB", { weekday: "long" })} ${fmtDate(Date.now())}</p></div>
+      <button class="btn primary" data-action="navPick">${icon("dice")} Help me pick</button>
+    </div>
+    <div class="home-grid">${sections.join("")}</div>`;
+}
+
+// The Help me pick page: a movie or a series, for me or for both of us
+function renderPickPage() {
+  const main = $("#main");
+  main.dataset.view = "pick";
+  const kind = state.pickKind, scope = state.pickScope;
+  state.pick[kind].open = true;
+  main.innerHTML = `
+    ${pageH1("Help me pick")}
+    <p class="muted sub">What are we watching tonight?</p>
+    <div class="big2">
+      <button class="${kind === "movie" ? "on" : ""}" data-action="pickKind" data-k="movie">${icon("film")} A movie</button>
+      <button class="${kind === "tv" ? "on" : ""}" data-action="pickKind" data-k="tv">${icon("tv")} A series</button>
+    </div>
+    <div class="big2">
+      <button class="${scope === "mine" ? "on" : ""}" data-action="pickScope" data-s="mine">${icon("user")} Just me</button>
+      <button class="${scope === "ours" ? "on" : ""}" data-action="pickScope" data-s="ours">${icon("users")} Both of us</button>
+    </div>
+    <div id="pick"></div>`;
+  renderPick(kind, scope);
 }
 
 // ---------- Watching (series) ----------
@@ -1141,9 +1361,9 @@ function renderWatching(kind) {
   const mine = list(kind, "mine").filter((x) => x.status === "watching" && !caughtUp(x) && !oursActive(kind, x.tmdbId));
   const items = [...ours.map((x) => [x, "ours"]), ...mine.map((x) => [x, "mine"])]
     .sort(([a], [b]) => (b.updatedAt || 0) - (a.updatedAt || 0));
-  main.innerHTML = items.length
+  main.innerHTML = pageH1("Series · Watching") + (items.length
     ? `<div class="list">${items.map(([x, s]) => card(kind, x, s, { label: s === "ours" ? `<span class="pill good">Together</span>` : `<span class="pill later">Just me</span>` })).join("")}</div>`
-    : `<p class="empty">Nothing on right now. Pick a series from <b>Watchlist</b>.</p>`;
+    : `<p class="empty">Nothing on right now. Pick a series from <b>Watchlist</b>.</p>`);
 }
 
 // ---------- Watched ----------
@@ -1270,6 +1490,71 @@ function renderResults(kind) {
     <p class="attribution">Data from TMDB. Streaming info from JustWatch.</p>`;
 }
 
+// ---------- The search box at the top: both series and movies ----------
+let gTimer;
+function onGlobalSearch(value) {
+  state.gq = value;
+  const q = value.trim();
+  if (!q) { state.view = state.view === "search" ? "list" : state.view; state.gres = { movie: null, tv: null, loading: false }; return render(); }
+  state.view = "search";
+  render();
+  clearTimeout(gTimer);
+  gTimer = setTimeout(async () => {
+    state.gres.loading = true;
+    try {
+      const [mv, tv] = await Promise.all(["movie", "tv"].map((k) => tmdb(`/search/${K[k].path}`, { query: q, include_adult: "false" })));
+      if (q !== state.gq.trim()) return;
+      state.gres = { movie: mv.results || [], tv: tv.results || [], loading: false };
+    } catch (err) { state.gres.loading = false; toast("Search failed: " + err.message); }
+    render();
+  }, 350);
+}
+function tmdbCard(kind, r) {
+  return `
+      <article class="card show result" data-action="open" data-kind="${kind}" data-id="${r.id}">
+        <div class="poster">${r.poster_path ? `<img loading="lazy" src="${img(r.poster_path, "w185")}" alt="">` : K[kind].emoji}</div>
+        <div class="info">
+          <h3>${esc(r.name || r.title)} <span class="muted year">${esc((r.first_air_date || r.release_date || "").slice(0, 4))}</span></h3>
+          <div class="muted small">${KIND_NAMES[kind] === "Series" ? "Series" : "Movie"}</div>
+          <p class="overview clamp">${esc(r.overview || "")}</p>
+        </div>
+        <button class="add" data-action="add" data-kind="${kind}" data-id="${r.id}" aria-label="Add to my watchlist">＋</button>
+      </article>`;
+}
+function renderGlobalSearch() {
+  const main = $("#main");
+  main.dataset.view = "gsearch";
+  const q = state.gq.trim().toLowerCase();
+  const local = q.length >= 2 ? KINDS.flatMap((k) => localMatches(k, q).map(([x, scope]) => [k, x, scope])) : [];
+  const mine = local.length ? `<h2 class="section">In your lists (${local.length})</h2>
+    <div class="list">${local.slice(0, 40).map(([k, x, scope]) => card(k, x, scope, { label: `<span class="pill later">${KIND_NAMES[k] === "Series" ? "Series" : "Movie"} · ${esc(whereLabel(k, x, scope))}</span>` })).join("")}</div>
+    ${local.length > 40 ? `<p class="muted small">Showing 40 of ${local.length}. Type more to narrow it down.</p>` : ""}` : "";
+  const fresh = (k) => (state.gres[k] || []).filter((r) => !get(k, "mine", r.id) && !get(k, "ours", r.id)).slice(0, 10);
+  const tm = state.gres.movie
+    ? ["movie", "tv"].map((k) => fresh(k).length ? `<h2 class="section">${k === "movie" ? "Movies" : "Series"} on TMDB</h2><div class="list">${fresh(k).map((r) => tmdbCard(k, r)).join("")}</div>` : "").join("")
+    : `<div class="splash small"><div class="spinner"></div></div>`;
+  main.innerHTML = `${pageH1(`Search: ${state.gq.trim()}`)}${mine}${tm}
+    ${state.gres.movie && !local.length && !fresh("movie").length && !fresh("tv").length ? `<p class="empty">No results.</p>` : ""}
+    <p class="attribution">Data from TMDB. Streaming info from JustWatch.</p>`;
+}
+
+// ---------- Star dialog (a fourth star) ----------
+function renderStarDialog() {
+  const box = $("#dialog");
+  if (!box) return;
+  const d = state.starDialog;
+  if (!d) { box.innerHTML = ""; return; }
+  const target = get(d.kind, "ours", d.id);
+  box.innerHTML = `<div class="scrim" data-action="starCancel"></div>
+    <div class="dialog" role="dialog" aria-label="You already have ${MAX_STARS} stars">
+      <h3>You already have ${MAX_STARS} stars</h3>
+      <p>Remove one to give your star to <b>${esc(titleOf(target || {}))}</b>.</p>
+      ${myStars(d.kind).map((x) => `<div class="drow"><div class="mini">${x.poster ? `<img src="${img(x.poster, "w92")}" alt="">` : ""}</div><span>${esc(titleOf(x))}</span>
+        <button class="rm" data-action="starSwap" data-rm="${x.tmdbId}">Remove</button></div>`).join("")}
+      <button class="btn wide" data-action="starCancel">Cancel</button>
+    </div>`;
+}
+
 // ---------- Detail sheet ----------
 function openSheet(kind, id) {
   id = String(id);
@@ -1371,8 +1656,8 @@ function renderSheet() {
         <textarea id="reviewText" rows="${mine.review ? Math.min(10, 3 + Math.floor(mine.review.length / 60)) : 3}" placeholder="Write a comment…">${esc(mine.review || "")}</textarea>
         <button class="btn small" data-action="saveReview">Save</button>
         ${together
-          ? `<p class="small">👥 Watched together with ${esc(others || "someone")}. <button class="btn link small" data-action="togetherUnseen">Undo</button></p>`
-          : `<button class="btn wide" data-action="seenTogether">👥 We watched it together</button>`}
+          ? `<p class="small">Watched together with ${esc(others || "someone")}. <button class="btn link small" data-action="togetherUnseen">Undo</button></p>`
+          : `<button class="btn wide" data-action="seenTogether">${icon("users", 18)} We watched it together</button>`}
       </section>`;
   }
 
@@ -1382,8 +1667,8 @@ function renderSheet() {
     ourBlock = `
       <section>
         <h3>Watch together?</h3>
-        ${othersWith(kind, id).length ? `<p class="small">💡 <b>${esc(othersWith(kind, id).join(" & "))}</b> also has this on their watchlist.</p>` : ""}
-        <button class="btn wide" data-action="suggest">👥 Suggest to ${esc(others || "watch together")}</button>
+        ${othersWith(kind, id).length ? `<p class="small">${icon("bulb", 16)} <b>${esc(othersWith(kind, id).join(" & "))}</b> also has this on their watchlist.</p>` : ""}
+        <button class="btn wide" data-action="suggest">${icon("users", 18)} Suggest to ${esc(others || "watch together")}</button>
         <p class="muted small">Only this ${K[kind].noun} is shared. The rest of your lists stay private.</p>
       </section>`;
   } else {
@@ -1401,6 +1686,7 @@ function renderSheet() {
             </div>`;
           }).join("")}
           ${isOurs(ours) ? `<p class="pill good">Watch together · ${thumbsTotal(ours)} thumbs up</p>` : ""}
+          ${canStar(ours) ? `<button class="btn wide ${ours.stars?.[uid] ? "primary" : ""}" data-action="star">${icon("star", 18)} ${ours.stars?.[uid] ? "In your Up next (tap to remove)" : "Put in Up next"}</button>` : ""}
           ${isMaybeLater(ours) ? `<p class="pill later">Maybe later · you both gave it a thumb up</p>` : ""}` : ""}
         ${kind === "tv"
           ? `<div class="seg">${STATUS_BTNS.tv.map(([k, l]) => `<button class="${ours.status === k ? "on" : ""}" data-action="status" data-scope="ours" data-s="${k}">${l}</button>`).join("")}</div>`
@@ -1635,7 +1921,8 @@ function renderSettings() {
       <div class="label-row"><span>${esc(tg)} <span class="muted small">${n}</span></span>
         <span><button class="btn link small" data-action="renameTag" data-k="${esc(tg)}">Rename</button><button class="btn link small red" data-action="deleteTag" data-k="${esc(tg)}">Remove</button></span></div>`).join("")}</div>`
       : `<p class="muted small">No labels yet. Add them on a series or movie in My stuff.</p>`}`;
-  $("#svcOthers").innerHTML = state.settingsOk ? "" : `<p class="muted small">Shared once the database rules are updated. Until then, changes here are yours.</p>`;
+  // The services are one setting for both of you. A service someone picks is added for both.
+  $("#svcOthers").innerHTML = "";
   const myForeign = shared.foreign;
   const isOn = (p, r) => (r === CONFIG.region ? mine.has(p.id) : myForeign.some((f) => f.r === r && f.id === p.id));
   const serviceBtn = (p, r) => `
@@ -2083,7 +2370,7 @@ function renderStats() {
     }).join("")}</div>
     ${best.length ? `<h4>Highest rated</h4><ol class="best">${best.map((m) => `<li data-action="open" data-kind="movie" data-id="${m.tmdbId}"><span>${esc(m.title)} <span class="muted">${esc(yearShown(m))}</span></span><span class="stars">${starText(m.myRating)}</span></li>`).join("")}</ol>` : ""}`;
 
-  main.innerHTML = `
+  main.innerHTML = `${pageH1("Movies · Stats")}
     <div class="chips">
       <button class="chip ${sel ? "" : "on"}" data-action="statsYear" data-y="">All years</button>
       ${years.map((y) => `<button class="chip ${sel === y ? "on" : ""}" data-action="statsYear" data-y="${y}">${y}</button>`).join("")}
@@ -2145,6 +2432,10 @@ function nextGffNote() {
   return `GFF${y}#${nums.length ? Math.max(...nums) + 1 : 1}`;
 }
 
+function clearSearch() {
+  state.gq = ""; state.searchOpen = false; state.gres = { movie: null, tv: null, loading: false };
+  const input = $("#gsearch"); if (input) input.value = "";
+}
 // Where things wait for your vote: Watchlist → Our stuff → Waiting for me
 function goToPending(kind) {
   state.tab[kind] = "watchlist";
@@ -2232,7 +2523,7 @@ document.addEventListener("click", async (e) => {
   const t = e.target.closest("[data-action]");
   if (!t) return;
   const a = t.dataset.action;
-  if (["advance", "add", "skip"].includes(a)) e.stopPropagation();
+  if (["advance", "add", "skip", "star"].includes(a)) e.stopPropagation();
   if (t.tagName === "A" && t.getAttribute("href") === "#") e.preventDefault();
   const kind = t.dataset.kind || state.open?.kind || state.mode;
   const id = t.dataset.id || state.open?.id;
@@ -2253,7 +2544,7 @@ document.addEventListener("click", async (e) => {
       return;
     }
     case "logout": if (settingsOpen) history.back(); return signOut(auth);
-    case "menu": return openSettings();
+    case "menu": state.moreOpen = false; render(); return openSettings();
     case "toggleService": {
       const pid = Number(t.dataset.pid), r = t.dataset.r || CONFIG.region;
       const me = sharedSettings();
@@ -2317,12 +2608,67 @@ document.addEventListener("click", async (e) => {
 
     // Navigation
     case "mode":
-      if (state.mode === t.dataset.m) return;
+      if (state.mode === t.dataset.m && state.view === "list") return;
       state.mode = t.dataset.m;
+      state.view = "list";
       localStorage.setItem("mode", state.mode);
       if (pendingVotes(state.mode).length) goToPending(state.mode); // straight to what waits for you
+      $("#main").dataset.view = "";
       window.scrollTo(0, 0);
-      return renderShell();
+      return render();
+    case "nav": {
+      // A place in the menu: Series or Movies, and a tab
+      const k = t.dataset.kind, tab = t.dataset.tab;
+      state.mode = k; localStorage.setItem("mode", k);
+      state.view = "list"; state.moreOpen = false; clearSearch();
+      if (tab === "watchlist" && pendingVotes(k).length) goToPending(k);
+      else { state.tab[k] = tab; localStorage.setItem(`tab-${k}`, tab); }
+      $("#main").innerHTML = ""; $("#main").dataset.view = "";
+      window.scrollTo(0, 0);
+      return render();
+    }
+    case "navHome":
+      state.view = "home"; state.moreOpen = false; clearSearch();
+      window.scrollTo(0, 0);
+      return render();
+    case "homePending": {
+      const k = t.dataset.kind;
+      state.mode = k; localStorage.setItem("mode", k); state.view = "list"; goToPending(k);
+      $("#main").dataset.view = "";
+      window.scrollTo(0, 0);
+      return render();
+    }
+    case "navPick":
+      if (state.view !== "pick") state.pickKind = state.mode;
+      state.view = "pick"; state.moreOpen = false; clearSearch();
+      window.scrollTo(0, 0);
+      return render();
+    case "pickKind": state.pickKind = t.dataset.k; state.pick[state.pickKind].results = null; return render();
+    case "pickScope": state.pickScope = t.dataset.s; state.pick[state.pickKind].results = null; return render();
+    case "searchToggle": {
+      state.searchOpen = !state.searchOpen;
+      if (!state.searchOpen) clearSearch();
+      render();
+      if (state.searchOpen) setTimeout(() => $("#gsearch")?.focus(), 50);
+      return;
+    }
+    case "moreToggle": state.moreOpen = !state.moreOpen; return render();
+    case "star": {
+      const x = get(kind, "ours", id);
+      if (!x) return;
+      if (x.stars?.[uid]) return save(kind, "ours", id, { [`stars.${uid}`]: deleteField() });
+      if (!canStar(x)) return toast("Give it two thumbs first");
+      if (myStars(kind).length >= MAX_STARS) { state.starDialog = { kind, id }; return render(); }
+      return save(kind, "ours", id, { [`stars.${uid}`]: true }).then(() => toast("In Up next"));
+    }
+    case "starSwap": {
+      const d = state.starDialog;
+      state.starDialog = null;
+      await save(d.kind, "ours", t.dataset.rm, { [`stars.${uid}`]: deleteField() });
+      await save(d.kind, "ours", d.id, { [`stars.${uid}`]: true });
+      return toast("Star moved");
+    }
+    case "starCancel": state.starDialog = null; return render();
     case "tab":
       if (t.dataset.tab === "watchlist" && pendingVotes(state.mode).length) {
         goToPending(state.mode);
@@ -2351,6 +2697,7 @@ document.addEventListener("click", async (e) => {
     case "sort": f.sort = t.dataset.k; f.limit = 60; return render();
     case "onServices": f.onServices = !f.onServices; f.limit = 60; return render();
     case "reshuffle": shuffleKey.clear(); return render();
+    case "filtersToggle": state.filtersOpen = !state.filtersOpen; return render();
     case "bothFilter": f.both = !f.both; f.limit = 60; return render();
     case "tag": f.tag = f.tag === t.dataset.k ? null : t.dataset.k; f.limit = 60; return render();
     case "more": f.limit += 60; return render();
@@ -2379,7 +2726,9 @@ document.addEventListener("click", async (e) => {
     case "vote": {
       const v = Number(t.dataset.v);
       const cur = get(kind, "ours", id)?.interest?.[uid];
-      return save(kind, "ours", id, { [`interest.${uid}`]: cur === v ? deleteField() : v });
+      const patch = { [`interest.${uid}`]: cur === v ? deleteField() : v };
+      if (cur === v || v < 2) patch[`stars.${uid}`] = deleteField(); // a star needs two thumbs
+      return save(kind, "ours", id, patch);
     }
     case "unshare": {
       const x = get(kind, "ours", id);
@@ -2395,6 +2744,7 @@ document.addEventListener("click", async (e) => {
       const scope = t.dataset.scope, s = t.dataset.s;
       const show = get(kind, scope, id);
       const patch = { status: s };
+      if (scope === "ours" && s !== "want") patch.stars = deleteField(); // started watching: stars are freed
       if (s === "done" && show.seasons?.length) {
         const last = [...seasonsOf(show)].reverse().find((x) => isAired(show, x.n, 1));
         if (last) {
@@ -2421,6 +2771,7 @@ document.addEventListener("click", async (e) => {
       }
       const patch = { progress };
       if (show.status === "want" || show.status === "done") patch.status = "watching";
+      if (scope === "ours" && show.status === "want") patch.stars = deleteField();
       return save(kind, scope, id, patch);
     }
     case "resetEp": return save(kind, t.dataset.scope, id, { progress: { s: 0, e: 0 } });
@@ -2455,7 +2806,7 @@ document.addEventListener("click", async (e) => {
       const ours = get("movie", "ours", id);
       const when = mine.seenAt || Date.now();
       try {
-        if (ours) await updateDoc(ref("movie", "ours", id), { status: "seen", seenAt: when, [`addedFor.${uid}`]: true });
+        if (ours) await updateDoc(ref("movie", "ours", id), { status: "seen", seenAt: when, [`addedFor.${uid}`]: true, stars: deleteField() });
         else await setDoc(ref("movie", "ours", id), { ...baseData(mine), status: "seen", seenAt: when, interest: {}, suggestedBy: uid, suggestedAt: Date.now(), addedFor: { [uid]: true } });
         toast("Marked as watched together");
       } catch (err) { toast("Could not save: " + err.message); }
@@ -2463,7 +2814,7 @@ document.addEventListener("click", async (e) => {
     }
     case "togetherSeen": {
       const now = Date.now();
-      await save("movie", "ours", id, { status: "seen", seenAt: now });
+      await save("movie", "ours", id, { status: "seen", seenAt: now, stars: deleteField() });
       return toast("Marked as watched together");
     }
     case "togetherUnseen": return save("movie", "ours", id, { status: "want", seenAt: deleteField() });
