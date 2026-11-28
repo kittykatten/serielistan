@@ -79,7 +79,7 @@ if (!configured) {
 }
 
 // Keep in step with VERSION in sw.js. Shown in the menu so you can check you have the latest.
-const APP_VERSION = "v1.1.1 (v56)";
+const APP_VERSION = "v1.1.2 (v57)";
 
 // Look for a new version on every start and when the app comes back to the foreground.
 // When a new service worker takes over, reload once so the new files are used.
@@ -2532,7 +2532,9 @@ document.addEventListener("click", async (e) => {
   const id = t.dataset.id || state.open?.id;
   const uid = state.user?.uid;
   const f = state.filters[state.mode];
-  const p = state.pick[state.mode];
+  // On the Help me pick page the choices belong to the kind picked there (movie or series), not the open part
+  const pickKind = state.view === "pick" ? state.pickKind : state.mode;
+  const p = state.pick[pickKind];
   const scopeHere = () => state.scope[state.mode][state.tab[state.mode] === "watched" ? "watched" : "watchlist"];
 
   switch (a) {
@@ -2719,7 +2721,7 @@ document.addEventListener("click", async (e) => {
       return save(kind, "mine", id, { myInterest: v === 2 ? deleteField() : v }).then(() => toast(v === 0 ? "Hidden from your watchlist (still here if you search)" : v === 1 ? "Marked as Maybe" : "Yes please"));
     }
     case "pickToggle": p[t.dataset.k] = !p[t.dataset.k]; p.results = null; return render();
-    case "pick": doPick(state.mode, t.dataset.scope || scopeHere()); return render();
+    case "pick": doPick(pickKind, t.dataset.scope || scopeHere()); return render();
     case "skip": p.skipped.add(Number(id)); return render();
     case "unskip": p.skipped.clear(); return render();
 
