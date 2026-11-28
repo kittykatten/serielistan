@@ -7,6 +7,8 @@
 - Serier: raden Length på seriesidan ska också visa avsnittslängd, t.ex. "16 episodes · 58 min episodes · 15 h 25 min".
 - Help me pick (Both of us): visa Up next-stjärnorna på förslagen, och stjärnknappen så att man kan sätta/ta bort stjärna direkt där.
   "Not tonight" (✕) ska finnas kvar bredvid stjärnan.
+- Help me pick: "Not tonight" (✕) gäller till kl. 05 nästa morgon och sparas även om appen stängs (per enhet).
+  I dag nollställs det när appen laddas om, eller med "bring back".
 - "Log as seen" direkt från sökningen.
 - GFF-läge som fyller i plats och nummer under festivalen.
 - Sökning och rollistor för sedda filmer.
